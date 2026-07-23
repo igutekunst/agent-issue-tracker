@@ -9,7 +9,10 @@ approves knowledge changes in a web UI.
   parent/child nesting, and a separate **dependency DAG** (`A blocks B`).
 - **Agent-friendly CLI** (`issue …`) with `--json` on every read.
 - **Web interface** — a Gantt-like left-to-right dependency graph (Cytoscape),
-  an issue board, and a knowledge approval queue, all updating **live over SSE**.
+  an indented **hierarchical issue table** (collapsible subtrees), and a
+  knowledge approval queue, all updating **live over SSE**. A separate
+  touch-friendly **mobile view** shows epics and drills down one hierarchy level
+  per tap (auto-selected on small screens; a 📱/🖥 toggle previews it anywhere).
 - **Knowledge base** — a key/value store agents read freely but can only change
   with explicit **human approval**. Values can be long and are rendered as
   **markdown** (issue descriptions are too).

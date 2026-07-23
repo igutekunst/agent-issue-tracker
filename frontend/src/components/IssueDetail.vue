@@ -3,7 +3,10 @@ import { computed, ref, watch, onMounted } from 'vue'
 import { renderMarkdown } from '../markdown.js'
 import { store } from '../api.js'
 
-const props = defineProps({ issueId: Number })
+const props = defineProps({
+  issueId: Number,
+  fullscreen: { type: Boolean, default: false },
+})
 const emit = defineEmits(['close', 'select'])
 
 const issue = computed(() => store.issueById(props.issueId))
@@ -130,7 +133,7 @@ function title(id) {
 </script>
 
 <template>
-  <aside class="detail" v-if="issue">
+  <aside class="detail" :class="{ 'detail--full': fullscreen }" v-if="issue">
     <div class="detail-head">
       <span class="mono muted">#{{ issue.id }}</span>
       <div class="spacer"></div>
@@ -290,6 +293,25 @@ function title(id) {
   background: var(--bg-elev);
   overflow-y: auto;
   padding: 14px 16px 30px;
+}
+.detail--full {
+  position: fixed;
+  inset: 0;
+  width: 100%;
+  border-left: none;
+  z-index: 50;
+  padding-bottom: 60px;
+}
+/* On genuinely small screens, the sidebar always goes full-screen. */
+@media (max-width: 760px) {
+  .detail {
+    position: fixed;
+    inset: 0;
+    width: 100%;
+    border-left: none;
+    z-index: 50;
+    padding-bottom: 60px;
+  }
 }
 .detail-head {
   display: flex;

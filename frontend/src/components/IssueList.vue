@@ -1,10 +1,45 @@
 <script setup>
-import { ref } from 'vue'
+import { ref, computed } from 'vue'
 import { store } from '../api.js'
 
 const emit = defineEmits(['select'])
 const showNew = ref(false)
 const draft = ref(newDraft())
+const collapsed = ref(new Set())
+
+const PRI_RANK = { P0: 0, P1: 1, P2: 2, P3: 3 }
+
+// Flatten the parent/child hierarchy into ordered rows carrying a depth, so the
+// table can render as an indented tree. Siblings are ordered by priority then id.
+const rows = computed(() => {
+  const byParent = new Map()
+  for (const i of store.issues) {
+    const p = i.parent_id ?? null
+    if (!byParent.has(p)) byParent.set(p, [])
+    byParent.get(p).push(i)
+  }
+  for (const arr of byParent.values()) {
+    arr.sort(
+      (a, b) => PRI_RANK[a.priority] - PRI_RANK[b.priority] || a.id - b.id,
+    )
+  }
+  const out = []
+  const walk = (parentId, depth) => {
+    for (const issue of byParent.get(parentId) || []) {
+      const kids = byParent.get(issue.id) || []
+      out.push({ issue, depth, childCount: kids.length })
+      if (kids.length && !collapsed.value.has(issue.id)) walk(issue.id, depth + 1)
+    }
+  }
+  walk(null, 0)
+  return out
+})
+
+function toggle(id) {
+  const next = new Set(collapsed.value)
+  next.has(id) ? next.delete(id) : next.add(id)
+  collapsed.value = next
+}
 
 function newDraft() {
   return { title: '', description: '', priority: 'P2', parent_id: null }
@@ -74,36 +109,67 @@ async function setStatus(issue, status) {
         </tr>
       </thead>
       <tbody>
-        <tr v-for="i in store.issues" :key="i.id" @click="emit('select', i.id)">
-          <td class="mono">#{{ i.id }}</td>
-          <td><span class="chip" :class="'pri-' + i.priority">{{ i.priority }}</span></td>
+        <tr
+          v-for="row in rows"
+          :key="row.issue.id"
+          @click="emit('select', row.issue.id)"
+        >
+          <td class="mono">#{{ row.issue.id }}</td>
           <td>
-            <span :class="{ done: i.status === 'done' }">{{ i.title }}</span>
-            <span v-if="i.parent_id" class="muted"> ↳ #{{ i.parent_id }}</span>
-            <span v-if="i.comment_count" class="muted cc" title="comments">
-              💬 {{ i.comment_count }}
+            <span class="chip" :class="'pri-' + row.issue.priority">
+              {{ row.issue.priority }}
+            </span>
+          </td>
+          <td>
+            <span class="title-cell" :style="{ paddingLeft: row.depth * 20 + 'px' }">
+              <button
+                v-if="row.childCount"
+                class="twisty"
+                :title="collapsed.has(row.issue.id) ? 'expand' : 'collapse'"
+                @click.stop="toggle(row.issue.id)"
+              >
+                {{ collapsed.has(row.issue.id) ? '▸' : '▾' }}
+              </button>
+              <span v-else class="twisty-spacer"></span>
+              <span :class="{ done: row.issue.status === 'done' }">
+                {{ row.issue.title }}
+              </span>
+              <span v-if="row.childCount" class="muted cc" title="sub-issues">
+                ({{ row.childCount }})
+              </span>
+              <span v-if="row.issue.comment_count" class="muted cc" title="comments">
+                💬 {{ row.issue.comment_count }}
+              </span>
             </span>
           </td>
           <td>
             <select
               class="status-sel"
-              :class="'st-' + i.status"
-              :value="i.status"
+              :class="'st-' + row.issue.status"
+              :value="row.issue.status"
               @click.stop
-              @change="setStatus(i, $event.target.value)"
+              @change="setStatus(row.issue, $event.target.value)"
             >
               <option v-for="s in store.meta.statuses" :key="s" :value="s">{{ s }}</option>
             </select>
           </td>
           <td>
-            <span v-if="i.blocked_count" class="chip pri-P0" title="incomplete blockers">
-              ⛔ {{ i.blocked_count }}
+            <span
+              v-if="row.issue.blocked_count"
+              class="chip pri-P0"
+              title="incomplete blockers"
+            >
+              ⛔ {{ row.issue.blocked_count }}
             </span>
-            <span v-else-if="i.actionable" class="chip" style="color: var(--status-done); border-color: var(--status-done)">
+            <span
+              v-else-if="row.issue.actionable"
+              class="chip"
+              style="color: var(--status-done); border-color: var(--status-done)"
+            >
               ready
             </span>
           </td>
-          <td class="mono muted">{{ i.assignee || '' }}</td>
+          <td class="mono muted">{{ row.issue.assignee || '' }}</td>
         </tr>
       </tbody>
     </table>
@@ -178,6 +244,32 @@ tbody tr:hover {
 .cc {
   font-size: 12px;
   margin-left: 6px;
+}
+.title-cell {
+  display: inline-flex;
+  align-items: center;
+  gap: 2px;
+}
+.twisty {
+  width: 18px;
+  height: 18px;
+  padding: 0;
+  margin-right: 4px;
+  border: none;
+  background: transparent;
+  color: var(--text-dim);
+  font-size: 11px;
+  line-height: 1;
+  flex-shrink: 0;
+}
+.twisty:hover {
+  color: var(--text);
+}
+.twisty-spacer {
+  display: inline-block;
+  width: 18px;
+  margin-right: 4px;
+  flex-shrink: 0;
 }
 .status-sel {
   width: auto;

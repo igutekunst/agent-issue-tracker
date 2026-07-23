@@ -5,7 +5,7 @@ designed to be driven by coding agents via a CLI, and observed by
 humans via a web interface.
 """
 
-__version__ = "0.2.0"
+__version__ = "0.3.0"
 
 # Capability flags so an agent can check whether the build it is talking to has
 # a given feature, e.g. `issue version --json` -> features contains "kb-supersede".
@@ -24,4 +24,6 @@ FEATURES = [
     "sse",
     "changes-sentinel",
     "version",
+    "hierarchical-list",
+    "mobile-view",
 ]
