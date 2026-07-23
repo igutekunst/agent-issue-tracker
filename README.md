@@ -36,6 +36,31 @@ issue serve
 
 The CLI works without the frontend build; only the web UI needs `npm run build`.
 
+### `issue: command not found`?
+
+`issue` is a console script installed into your Python environment's `bin`
+directory. If that directory isn't on your `PATH`, the command won't be found
+(this is common with `fish`, which has its own `PATH`).
+
+Fixes, easiest first:
+
+```fish
+# 1. Install it as an isolated tool on your PATH (recommended; needs uv):
+uv tool install --editable .
+uv tool update-shell          # adds uv's bin dir to your shell (supports fish); then restart the shell
+
+# 2. …or just add the user bin dir to fish's PATH:
+fish_add_path ~/.local/bin
+
+# 3. …or skip PATH entirely with the module fallback (make a permanent fish shim):
+function issue; python3 -m issue_tracker.cli $argv; end
+funcsave issue
+```
+
+For bash/zsh, `export PATH="$HOME/.local/bin:$PATH"` in your `~/.bashrc` /
+`~/.zshrc` is the equivalent of option 2. `python3 -m issue_tracker.cli` always
+works as long as the package is installed.
+
 ## Data model
 
 | Concept        | Notes                                                                 |
