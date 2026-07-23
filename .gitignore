@@ -19,6 +19,9 @@ frontend/dist/
 # build`. Rebuild it with `cd frontend && npm run build` after changing the
 # frontend.
 
+# Deploy secrets
+.env
+
 # Editor / OS
 .DS_Store
 .idea/

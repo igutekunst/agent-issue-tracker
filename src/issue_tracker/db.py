@@ -101,6 +101,29 @@ CREATE TABLE IF NOT EXISTS knowledge_proposals (
     resolved_at    TEXT
 );
 
+-- API tokens for CLI / agents. Only the SHA-256 hash is stored.
+CREATE TABLE IF NOT EXISTS api_tokens (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    name         TEXT    NOT NULL,
+    token_hash   TEXT    NOT NULL UNIQUE,
+    is_admin     INTEGER NOT NULL DEFAULT 0,
+    created_at   TEXT    NOT NULL,
+    last_used_at TEXT,
+    revoked      INTEGER NOT NULL DEFAULT 0
+);
+
+-- Registered WebAuthn (passkey) credentials for the web interface.
+CREATE TABLE IF NOT EXISTS webauthn_credentials (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    credential_id TEXT    NOT NULL UNIQUE,   -- base64url
+    public_key    TEXT    NOT NULL,          -- base64url
+    sign_count    INTEGER NOT NULL DEFAULT 0,
+    name          TEXT,
+    transports    TEXT,
+    created_at    TEXT    NOT NULL,
+    last_used_at  TEXT
+);
+
 -- A monotonic change feed. Every mutation appends a row here so that the SSE
 -- endpoint can push live updates regardless of which process (CLI or web)
 -- performed the write.

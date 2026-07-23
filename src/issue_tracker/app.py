@@ -11,22 +11,96 @@ from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import FEATURES, __version__, db, store
+from . import FEATURES, __version__, auth, db, store
 
 STATIC_DIR = Path(__file__).parent / "static"
 
 app = FastAPI(title="Agent Issue Tracker", version=__version__)
 
 
+@app.on_event("startup")
+def _startup():
+    if auth.auth_enabled():
+        conn = db.connect()
+        try:
+            token = auth.ensure_bootstrap(conn)
+        finally:
+            conn.close()
+        if token:
+            print(
+                "\n[auth] No admin token found — created a bootstrap token.\n"
+                f"[auth] It is written to {db.db_path().parent / 'bootstrap-token.txt'}\n"
+                "[auth] Use it to `issue login` and to enroll your first passkey.\n"
+            )
+
+
+# Endpoints reachable without authentication (so a logged-out client can load
+# the SPA shell and complete a passkey login).
+_PUBLIC_API = {
+    "/api/auth/status",
+    "/api/webauthn/login/begin",
+    "/api/webauthn/login/finish",
+}
+
+
+def _needs_auth(path: str) -> bool:
+    if path in _PUBLIC_API:
+        return False
+    return path.startswith("/api/") or path == "/events"
+
+
 @app.middleware("http")
-async def _attribute_actor(request: Request, call_next):
-    # Attribute web-originated changes; clients may override with an X-Actor header.
-    store.set_actor(request.headers.get("x-actor") or "web")
+async def _auth_and_actor(request: Request, call_next):
+    request.state.principal = None
+    request.state.is_admin = False
+
+    if not auth.auth_enabled():
+        # Open mode: attribute changes, no gate. Clients may set X-Actor.
+        store.set_actor(request.headers.get("x-actor") or "web")
+        return await call_next(request)
+
+    path = request.url.path
+    authz = request.headers.get("authorization", "")
+    bearer = authz[7:].strip() if authz[:7].lower() == "bearer " else None
+    session_cookie = request.cookies.get(auth.SESSION_COOKIE)
+
+    if bearer or session_cookie or _needs_auth(path):
+        conn = db.connect()
+        try:
+            tok = auth.verify_token(conn, bearer) if bearer else None
+        finally:
+            conn.close()
+        if tok:
+            request.state.principal = tok["name"]
+            request.state.is_admin = bool(tok["is_admin"])
+        else:
+            sub = auth.read_session(session_cookie)
+            if sub:
+                request.state.principal = sub
+                request.state.is_admin = True  # the web user is the owner
+
+    if _needs_auth(path) and request.state.principal is None:
+        return JSONResponse(
+            {"detail": "authentication required"}, status_code=401
+        )
+
+    store.set_actor(request.state.principal or "web")
     return await call_next(request)
 
 
 def _conn():
     return db.connect()
+
+
+def _require_admin(request: Request):
+    if not auth.auth_enabled():
+        return
+    if not getattr(request.state, "is_admin", False):
+        raise HTTPException(status_code=403, detail="admin credential required")
+
+
+def _cookie_secure() -> bool:
+    return auth.expected_origin().startswith("https")
 
 
 # --- Request models ---------------------------------------------------------
@@ -320,6 +394,176 @@ def api_withdraw(proposal_id: int):
         return _guard(lambda: store.withdraw_proposal(conn, proposal_id))
     finally:
         conn.close()
+
+
+# --- Auth: status, tokens, passkeys -----------------------------------------
+
+
+class TokenCreate(BaseModel):
+    name: str
+    is_admin: bool = False
+
+
+class WebAuthnFinish(BaseModel):
+    credential: dict
+    name: str | None = None
+
+
+@app.get("/api/auth/status")
+def api_auth_status(request: Request):
+    enabled = auth.auth_enabled()
+    conn = _conn()
+    try:
+        has_passkey = auth.has_credentials(conn) if enabled else False
+    finally:
+        conn.close()
+    return {
+        "auth": enabled,
+        "authenticated": getattr(request.state, "principal", None) is not None
+        or not enabled,
+        "is_admin": getattr(request.state, "is_admin", False) or not enabled,
+        "principal": getattr(request.state, "principal", None),
+        "has_passkey": has_passkey,
+        "rp_id": auth.rp_id() if enabled else None,
+    }
+
+
+@app.get("/api/whoami")
+def api_whoami(request: Request):
+    return {
+        "principal": getattr(request.state, "principal", None),
+        "is_admin": getattr(request.state, "is_admin", False) or not auth.auth_enabled(),
+    }
+
+
+@app.post("/api/auth/logout")
+def api_logout():
+    resp = JSONResponse({"ok": True})
+    resp.delete_cookie(auth.SESSION_COOKIE)
+    return resp
+
+
+@app.get("/api/tokens")
+def api_list_tokens(request: Request):
+    _require_admin(request)
+    conn = _conn()
+    try:
+        return auth.list_tokens(conn)
+    finally:
+        conn.close()
+
+
+@app.post("/api/tokens", status_code=201)
+def api_create_token(request: Request, body: TokenCreate):
+    _require_admin(request)
+    conn = _conn()
+    try:
+        plaintext, row = auth.create_token(conn, body.name, is_admin=body.is_admin)
+        return {"token": plaintext, **row}
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+    finally:
+        conn.close()
+
+
+@app.delete("/api/tokens/{token_id}")
+def api_revoke_token(request: Request, token_id: int):
+    _require_admin(request)
+    conn = _conn()
+    try:
+        ok = auth.revoke_token(conn, token_id)
+        if not ok:
+            raise HTTPException(status_code=404, detail="token not found")
+        return {"ok": True}
+    finally:
+        conn.close()
+
+
+def _set_challenge(resp: Response, challenge: bytes, kind: str):
+    resp.set_cookie(
+        auth.CHALLENGE_COOKIE,
+        auth.make_challenge_cookie(challenge, kind),
+        max_age=auth.CHALLENGE_TTL,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="lax",
+    )
+
+
+@app.post("/api/webauthn/register/begin")
+def api_register_begin(request: Request):
+    _require_admin(request)
+    conn = _conn()
+    try:
+        options_json, challenge = auth.registration_options(conn)
+    finally:
+        conn.close()
+    resp = Response(content=options_json, media_type="application/json")
+    _set_challenge(resp, challenge, "reg")
+    return resp
+
+
+@app.post("/api/webauthn/register/finish")
+def api_register_finish(request: Request, body: WebAuthnFinish):
+    _require_admin(request)
+    challenge = auth.read_challenge_cookie(
+        request.cookies.get(auth.CHALLENGE_COOKIE), "reg"
+    )
+    if challenge is None:
+        raise HTTPException(status_code=400, detail="registration challenge expired")
+    conn = _conn()
+    try:
+        result = auth.verify_registration(
+            conn, body.credential, challenge, body.name or "passkey"
+        )
+    except Exception as exc:  # noqa: BLE001 - surface verification errors
+        raise HTTPException(status_code=400, detail=f"registration failed: {exc}")
+    finally:
+        conn.close()
+    resp = JSONResponse({"ok": True, **result})
+    resp.delete_cookie(auth.CHALLENGE_COOKIE)
+    return resp
+
+
+@app.post("/api/webauthn/login/begin")
+def api_login_begin():
+    conn = _conn()
+    try:
+        if not auth.has_credentials(conn):
+            raise HTTPException(status_code=400, detail="no passkeys registered")
+        options_json, challenge = auth.authentication_options(conn)
+    finally:
+        conn.close()
+    resp = Response(content=options_json, media_type="application/json")
+    _set_challenge(resp, challenge, "login")
+    return resp
+
+
+@app.post("/api/webauthn/login/finish")
+def api_login_finish(request: Request, body: WebAuthnFinish):
+    challenge = auth.read_challenge_cookie(
+        request.cookies.get(auth.CHALLENGE_COOKIE), "login"
+    )
+    if challenge is None:
+        raise HTTPException(status_code=400, detail="login challenge expired")
+    conn = _conn()
+    try:
+        result = auth.verify_authentication(conn, body.credential, challenge)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"login failed: {exc}")
+    finally:
+        conn.close()
+    resp = JSONResponse({"ok": True, **result})
+    resp.delete_cookie(auth.CHALLENGE_COOKIE)
+    resp.set_cookie(
+        auth.SESSION_COOKIE,
+        auth.make_session(f"web:{result['name']}"),
+        max_age=auth.SESSION_TTL,
+        httponly=True,
+        secure=_cookie_secure(),
+        samesite="lax",
+    )
+    return resp
 
 
 # --- SSE live feed ----------------------------------------------------------

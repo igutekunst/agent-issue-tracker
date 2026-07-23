@@ -2,6 +2,9 @@
 
 Designed to be the primary interface for coding agents. Commands are terse,
 output is human-readable by default and JSON-friendly with ``--json``.
+
+The CLI operates on the local SQLite database by default, or against a remote
+server when one is configured (``issue login`` / ``ISSUE_TRACKER_SERVER``).
 """
 
 from __future__ import annotations
@@ -16,7 +19,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
-from . import FEATURES, __version__, db, store
+from . import FEATURES, __version__, backends, config, db, store
 
 app = typer.Typer(
     help="Hierarchical issue tracker + human-gated knowledge base for agents.",
@@ -26,9 +29,11 @@ app = typer.Typer(
 dep_app = typer.Typer(help="Manage dependencies between issues.", no_args_is_help=True)
 kb_app = typer.Typer(help="Knowledge base (human-approved key/value store).", no_args_is_help=True)
 comment_app = typer.Typer(help="Add and read notes/comments on issues.", no_args_is_help=True)
+token_app = typer.Typer(help="Manage API tokens for CLI/agents.", no_args_is_help=True)
 app.add_typer(dep_app, name="dep")
 app.add_typer(kb_app, name="kb")
 app.add_typer(comment_app, name="comment")
+app.add_typer(token_app, name="token")
 
 console = Console()
 err = Console(stderr=True)
@@ -53,13 +58,14 @@ def _main(
     actor: Optional[str] = typer.Option(
         None,
         "--actor",
-        help="Attribute changes to this name in the activity feed "
-        "(defaults to the ISSUE_TRACKER_ACTOR env var).",
+        help="Attribute changes to this name in the activity feed, local mode "
+        "(defaults to ISSUE_TRACKER_ACTOR; remote mode uses the token's name).",
     ),
 ):
     """Hierarchical issue tracker + human-gated knowledge base for agents."""
     if actor:
         store.set_actor(actor)
+
 
 STATUS_STYLE = {
     "open": "white",
@@ -71,8 +77,8 @@ STATUS_STYLE = {
 PRIORITY_STYLE = {"P0": "bold red", "P1": "red", "P2": "yellow", "P3": "dim"}
 
 
-def _conn():
-    return db.connect()
+def _backend():
+    return backends.get_backend()
 
 
 def _fail(msg: str) -> None:
@@ -118,10 +124,9 @@ def add(
     json_out: bool = typer.Option(False, "--json"),
 ):
     """Create a new issue."""
-    conn = _conn()
+    be = _backend()
     try:
-        issue = store.create_issue(
-            conn,
+        issue = be.create_issue(
             title=title,
             description=description,
             priority=priority,
@@ -132,11 +137,9 @@ def add(
             assignee=assignee,
         )
         for blocker in depends_on or []:
-            store.add_dependency(conn, blocker_id=blocker, blocked_id=issue["id"])
+            be.add_dependency(blocker, issue["id"])
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     if json_out:
         _emit(issue, True)
     else:
@@ -150,11 +153,11 @@ def list_cmd(
     json_out: bool = typer.Option(False, "--json"),
 ):
     """List issues (most important first)."""
-    conn = _conn()
+    be = _backend()
     try:
-        issues = store.list_issues(conn, status=status, priority=priority)
-    finally:
-        conn.close()
+        issues = be.list_issues(status=status, priority=priority)
+    except store.StoreError as exc:
+        _fail(str(exc))
     if json_out:
         _emit(issues, True)
         return
@@ -167,39 +170,28 @@ def show(
     json_out: bool = typer.Option(False, "--json"),
 ):
     """Show a single issue with its relationships."""
-    conn = _conn()
+    be = _backend()
     try:
-        issue = store.get_issue(conn, issue_id)
-        if issue is None:
-            _fail(f"Issue #{issue_id} not found")
-        blockers = store.blockers_for(conn, issue_id)
-        blocks = store.blocked_by_for(conn, issue_id)
-        children = [c["id"] for c in store.list_issues(conn, parent_id=issue_id)]
-        comments = store.list_comments(conn, issue_id)
-    finally:
-        conn.close()
+        issue = be.get_issue(issue_id)
+    except store.StoreError as exc:
+        _fail(str(exc))
+    blockers = issue.get("blockers", [])
+    blocks = issue.get("blocks", [])
+    children = issue.get("children", [])
+    comments = issue.get("comments", [])
     if json_out:
-        _emit(
-            {
-                **issue,
-                "blockers": blockers,
-                "blocks": blocks,
-                "children": children,
-                "comments": comments,
-            },
-            True,
-        )
+        _emit(issue, True)
         return
     console.print(f"[bold]#{issue['id']}[/] {issue['title']}")
     _kv("status", issue["status"], STATUS_STYLE.get(issue["status"], "white"))
     _kv("priority", issue["priority"], PRIORITY_STYLE.get(issue["priority"], "white"))
-    if issue["parent_id"]:
+    if issue.get("parent_id"):
         _kv("parent", f"#{issue['parent_id']}", "white")
-    if issue["assignee"]:
+    if issue.get("assignee"):
         _kv("assignee", issue["assignee"], "white")
-    if issue["branch"]:
+    if issue.get("branch"):
         _kv("branch", issue["branch"], "cyan")
-    if issue["worktree"]:
+    if issue.get("worktree"):
         _kv("worktree", issue["worktree"], "cyan")
     if blockers:
         _kv("blocked by", ", ".join(f"#{b}" for b in blockers), "red")
@@ -207,9 +199,9 @@ def show(
         _kv("blocks", ", ".join(f"#{b}" for b in blocks), "yellow")
     if children:
         _kv("children", ", ".join(f"#{c}" for c in children), "white")
-    if issue["metadata"]:
+    if issue.get("metadata"):
         _kv("metadata", jsonlib.dumps(issue["metadata"]), "dim")
-    if issue["description"]:
+    if issue.get("description"):
         console.print()
         console.print(issue["description"])
     if comments:
@@ -255,13 +247,11 @@ def update(
             _fail(f"--meta must be valid JSON: {exc}")
     if not fields:
         _fail("Nothing to update; pass at least one field")
-    conn = _conn()
+    be = _backend()
     try:
-        issue = store.update_issue(conn, issue_id, **fields)
+        issue = be.update_issue(issue_id, **fields)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     if json_out:
         _emit(issue, True)
     else:
@@ -287,13 +277,11 @@ def block(issue_id: int = typer.Argument(...)):
 
 
 def _quick_status(issue_id: int, status: str) -> None:
-    conn = _conn()
+    be = _backend()
     try:
-        store.update_issue(conn, issue_id, status=status)
+        be.update_issue(issue_id, status=status)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     console.print(f"Issue [bold]#{issue_id}[/] -> [italic]{status}[/]")
 
 
@@ -305,24 +293,22 @@ def rm(
     """Delete an issue (children become top-level, dependencies removed)."""
     if not yes:
         typer.confirm(f"Delete issue #{issue_id}?", abort=True)
-    conn = _conn()
+    be = _backend()
     try:
-        store.delete_issue(conn, issue_id)
+        be.delete_issue(issue_id)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     console.print(f"Deleted issue #{issue_id}")
 
 
 @app.command()
 def tree(json_out: bool = typer.Option(False, "--json")):
     """Show issues as a hierarchy tree."""
-    conn = _conn()
+    be = _backend()
     try:
-        issues = store.list_issues(conn)
-    finally:
-        conn.close()
+        issues = be.list_issues()
+    except store.StoreError as exc:
+        _fail(str(exc))
     if json_out:
         _emit(issues, True)
         return
@@ -334,8 +320,7 @@ def tree(json_out: bool = typer.Option(False, "--json")):
 
     def add_children(node, parent_id):
         for issue in by_parent.get(parent_id, []):
-            label = _issue_label(issue)
-            child = node.add(label)
+            child = node.add(_issue_label(issue))
             add_children(child, issue["id"])
 
     add_children(root, None)
@@ -345,11 +330,11 @@ def tree(json_out: bool = typer.Option(False, "--json")):
 @app.command(name="next")
 def next_cmd(json_out: bool = typer.Option(False, "--json")):
     """Show actionable issues: open, unblocked, most important first."""
-    conn = _conn()
+    be = _backend()
     try:
-        data = store.graph(conn)
-    finally:
-        conn.close()
+        data = be.graph()
+    except store.StoreError as exc:
+        _fail(str(exc))
     actionable = [i for i in data["issues"] if i.get("actionable")]
     if json_out:
         _emit(actionable, True)
@@ -366,11 +351,11 @@ def activity(
     json_out: bool = typer.Option(False, "--json"),
 ):
     """Show a feed of recent changes (who changed what)."""
-    conn = _conn()
+    be = _backend()
     try:
-        rows = store.activity(conn, limit=limit)
-    finally:
-        conn.close()
+        rows = be.activity(limit=limit)
+    except store.StoreError as exc:
+        _fail(str(exc))
     if json_out:
         _emit(rows, True)
         return
@@ -382,49 +367,8 @@ def activity(
     table.add_column("actor", style="cyan")
     table.add_column("change")
     for r in rows:
-        table.add_row(
-            r["ts"].replace("T", " "),
-            r.get("actor") or "—",
-            r["text"],
-        )
+        table.add_row(r["ts"].replace("T", " "), r.get("actor") or "—", r["text"])
     console.print(table)
-
-
-@app.command()
-def serve(
-    host: str = typer.Option("127.0.0.1", "--host"),
-    port: int = typer.Option(8000, "--port"),
-    reload: bool = typer.Option(False, "--reload"),
-):
-    """Run the web interface (API + dependency graph + approval UI)."""
-    try:
-        import uvicorn
-    except ImportError:
-        _fail("uvicorn is not installed; run `pip install -e .`")
-    path = db.db_path()
-    console.print(f"Database: [cyan]{path}[/]")
-    console.print(f"Web UI:   [green]http://{host}:{port}[/]")
-    uvicorn.run("issue_tracker.app:app", host=host, port=port, reload=reload)
-
-
-@app.command()
-def version(json_out: bool = typer.Option(False, "--json")):
-    """Show version, feature flags, and the active database path.
-
-    Agents can check `issue version --json` to confirm a build has a given
-    capability (e.g. the "features" list contains "kb-supersede").
-    """
-    info = {
-        "version": __version__,
-        "features": FEATURES,
-        "db": str(db.db_path()),
-    }
-    if json_out:
-        _emit(info, True)
-        return
-    console.print(f"agent-issue-tracker [bold]{__version__}[/]")
-    console.print(f"  [dim]db:[/] [cyan]{db.db_path()}[/]")
-    console.print(f"  [dim]features:[/] {', '.join(FEATURES)}")
 
 
 @app.command()
@@ -434,30 +378,17 @@ def changes(
     ),
     json_out: bool = typer.Option(False, "--json"),
 ):
-    """Update sentinel: has anything changed since a token/timestamp?
-
-    Call with no --since to get the current token. Pass that token back later
-    via --since to list what changed and receive an updated token. Tokens are
-    monotonic change ids; an ISO-8601 timestamp is also accepted.
-    """
-    conn = _conn()
+    """Update sentinel: has anything changed since a token/timestamp?"""
+    be = _backend()
     try:
-        token = store.latest_change_id(conn)
-        rows = store.changes_since_any(conn, since) if since is not None else []
-    finally:
-        conn.close()
+        result = be.changes(since=since)
+    except store.StoreError as exc:
+        _fail(str(exc))
     if json_out:
-        _emit(
-            {
-                "token": token,
-                "since": since,
-                "changed": bool(rows),
-                "count": len(rows),
-                "changes": rows,
-            },
-            True,
-        )
+        _emit(result, True)
         return
+    token = result["token"]
+    rows = result["changes"]
     if since is None:
         console.print(f"token: [bold]{token}[/]")
         return
@@ -478,6 +409,92 @@ def changes(
     console.print(table)
 
 
+# --- Remote / auth commands -------------------------------------------------
+
+
+@app.command()
+def login(
+    server: str = typer.Option(..., "--server", help="Base URL, e.g. https://issues.example.com"),
+    token: str = typer.Option(..., "--token", "-t", help="API token (see `issue token create`)"),
+):
+    """Point the CLI at a remote tracker and save credentials."""
+    server = server.rstrip("/")
+    be = backends.RemoteBackend(server, token)
+    try:
+        who = be.whoami()
+    except store.StoreError as exc:
+        _fail(f"could not authenticate to {server}: {exc}")
+    config.save_config({"server": server, "token": token})
+    principal = who.get("principal") or "(server has auth disabled)"
+    console.print(f"Logged in to [green]{server}[/] as [cyan]{principal}[/]")
+    console.print(f"[dim]Config saved to {config.config_path()}[/]")
+
+
+@app.command()
+def logout():
+    """Forget the remote server; revert to the local database."""
+    config.clear_config()
+    console.print("Logged out. The CLI now uses the local database.")
+
+
+@app.command()
+def whoami():
+    """Show whether the CLI is local or remote, and the current identity."""
+    server = config.resolve_server()
+    if not server:
+        console.print(f"[bold]local[/] · db: [cyan]{db.db_path()}[/]")
+        return
+    be = _backend()
+    try:
+        who = be.whoami()
+    except store.StoreError as exc:
+        _fail(str(exc))
+    console.print(f"[bold]remote[/] · server: [green]{server}[/]")
+    console.print(f"  identity: [cyan]{who.get('principal') or '—'}[/]")
+    console.print(f"  admin: {who.get('is_admin')}")
+
+
+@app.command()
+def version(json_out: bool = typer.Option(False, "--json")):
+    """Show version, feature flags, and where the CLI is pointed."""
+    server = config.resolve_server()
+    info = {
+        "version": __version__,
+        "features": FEATURES,
+        "mode": "remote" if server else "local",
+        "server": server,
+        "db": None if server else str(db.db_path()),
+    }
+    if json_out:
+        _emit(info, True)
+        return
+    console.print(f"agent-issue-tracker [bold]{__version__}[/]")
+    if server:
+        console.print(f"  [dim]mode:[/] remote · [green]{server}[/]")
+    else:
+        console.print(f"  [dim]mode:[/] local · db: [cyan]{db.db_path()}[/]")
+    console.print(f"  [dim]features:[/] {', '.join(FEATURES)}")
+
+
+@app.command()
+def serve(
+    host: str = typer.Option("127.0.0.1", "--host"),
+    port: int = typer.Option(8000, "--port"),
+    reload: bool = typer.Option(False, "--reload"),
+):
+    """Run the web interface (API + dependency graph + approval UI)."""
+    try:
+        import uvicorn
+    except ImportError:
+        _fail("uvicorn is not installed; run `pip install -e .`")
+    from . import auth
+
+    console.print(f"Database: [cyan]{db.db_path()}[/]")
+    console.print(f"Web UI:   [green]http://{host}:{port}[/]")
+    console.print(f"Auth:     {'[green]enabled[/]' if auth.auth_enabled() else '[yellow]disabled (local/open)[/]'}")
+    uvicorn.run("issue_tracker.app:app", host=host, port=port, reload=reload)
+
+
 # --- Dependency commands ----------------------------------------------------
 
 
@@ -487,27 +504,22 @@ def dep_add(
     blocked: int = typer.Argument(..., help="Issue that is waiting"),
 ):
     """Record that BLOCKER must be completed before BLOCKED."""
-    conn = _conn()
+    be = _backend()
     try:
-        store.add_dependency(conn, blocker_id=blocker, blocked_id=blocked)
+        be.add_dependency(blocker, blocked)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     console.print(f"#{blocker} now blocks #{blocked}")
 
 
 @dep_app.command("rm")
-def dep_rm(
-    blocker: int = typer.Argument(...),
-    blocked: int = typer.Argument(...),
-):
+def dep_rm(blocker: int = typer.Argument(...), blocked: int = typer.Argument(...)):
     """Remove a dependency edge."""
-    conn = _conn()
+    be = _backend()
     try:
-        store.remove_dependency(conn, blocker_id=blocker, blocked_id=blocked)
-    finally:
-        conn.close()
+        be.remove_dependency(blocker, blocked)
+    except store.StoreError as exc:
+        _fail(str(exc))
     console.print(f"Removed #{blocker} -> #{blocked}")
 
 
@@ -528,13 +540,11 @@ def comment_add(
 ):
     """Add a note/comment to an issue. Body may be long and use markdown."""
     body = _value_or_file(body, file, "BODY")
-    conn = _conn()
+    be = _backend()
     try:
-        comment = store.add_comment(conn, issue_id, body=body, author=author)
+        comment = be.add_comment(issue_id, body=body, author=author)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     if json_out:
         _emit(comment, True)
     else:
@@ -547,13 +557,11 @@ def comment_list(
     json_out: bool = typer.Option(False, "--json"),
 ):
     """List the comments on an issue."""
-    conn = _conn()
+    be = _backend()
     try:
-        if store.get_issue(conn, issue_id) is None:
-            _fail(f"Issue #{issue_id} not found")
-        comments = store.list_comments(conn, issue_id)
-    finally:
-        conn.close()
+        comments = be.list_comments(issue_id)
+    except store.StoreError as exc:
+        _fail(str(exc))
     if json_out:
         _emit(comments, True)
         return
@@ -568,13 +576,11 @@ def comment_rm(
     """Delete a comment by its id."""
     if not yes:
         typer.confirm(f"Delete comment #{comment_id}?", abort=True)
-    conn = _conn()
+    be = _backend()
     try:
-        store.delete_comment(conn, comment_id)
+        be.delete_comment(comment_id)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     console.print(f"Deleted comment #{comment_id}")
 
 
@@ -584,11 +590,11 @@ def comment_rm(
 @kb_app.command("get")
 def kb_get(key: str = typer.Argument(...), json_out: bool = typer.Option(False, "--json")):
     """Read an approved knowledge value."""
-    conn = _conn()
+    be = _backend()
     try:
-        row = store.kb_get(conn, key)
-    finally:
-        conn.close()
+        row = be.kb_get(key)
+    except store.StoreError as exc:
+        _fail(str(exc))
     if row is None:
         _fail(f"No approved value for key {key!r}")
     if json_out:
@@ -600,11 +606,11 @@ def kb_get(key: str = typer.Argument(...), json_out: bool = typer.Option(False, 
 @kb_app.command("list")
 def kb_list(json_out: bool = typer.Option(False, "--json")):
     """List all approved knowledge entries."""
-    conn = _conn()
+    be = _backend()
     try:
-        rows = store.kb_all(conn)
-    finally:
-        conn.close()
+        rows = be.kb_all()
+    except store.StoreError as exc:
+        _fail(str(exc))
     if json_out:
         _emit(rows, True)
         return
@@ -632,21 +638,13 @@ def kb_propose(
     author: str = typer.Option("agent", "--author"),
     json_out: bool = typer.Option(False, "--json"),
 ):
-    """Propose setting KEY=VALUE. Requires human approval in the web UI.
-
-    Values may be long and use markdown. For multi-line values, pass --file
-    (or '-f -' to read from stdin) instead of a shell-quoted argument.
-    """
+    """Propose setting KEY=VALUE. Requires human approval in the web UI."""
     value = _value_or_file(value, file, "VALUE")
-    conn = _conn()
+    be = _backend()
     try:
-        proposal = store.kb_propose(
-            conn, key=key, value=value, operation="set", author=author, note=note
-        )
+        proposal = be.kb_propose(key=key, value=value, operation="set", author=author, note=note)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     if json_out:
         _emit(proposal, True)
     else:
@@ -664,15 +662,11 @@ def kb_propose_delete(
     author: str = typer.Option("agent", "--author"),
 ):
     """Propose deleting KEY. Requires human approval in the web UI."""
-    conn = _conn()
+    be = _backend()
     try:
-        proposal = store.kb_propose(
-            conn, key=key, value=None, operation="delete", author=author, note=note
-        )
+        proposal = be.kb_propose(key=key, value=None, operation="delete", author=author, note=note)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     console.print(
         f"Proposed [bold]#{proposal['id']}[/]: delete [cyan]{key}[/] "
         f"([yellow]pending human approval[/])"
@@ -683,11 +677,11 @@ def kb_propose_delete(
 @kb_app.command("pending")
 def kb_pending(json_out: bool = typer.Option(False, "--json")):
     """List knowledge changes awaiting human approval."""
-    conn = _conn()
+    be = _backend()
     try:
-        rows = store.list_proposals(conn, status="pending")
-    finally:
-        conn.close()
+        rows = be.list_proposals(status="pending")
+    except store.StoreError as exc:
+        _fail(str(exc))
     if json_out:
         _emit(rows, True)
         return
@@ -716,40 +710,101 @@ def kb_pending(json_out: bool = typer.Option(False, "--json")):
 @kb_app.command("withdraw")
 def kb_withdraw(proposal_id: int = typer.Argument(...)):
     """Retract your own pending proposal (an agent's undo; no human needed)."""
-    conn = _conn()
+    be = _backend()
     try:
-        store.withdraw_proposal(conn, proposal_id)
+        be.withdraw_proposal(proposal_id)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     console.print(f"Withdrew proposal #{proposal_id}")
 
 
 @kb_app.command("approve")
 def kb_approve(proposal_id: int = typer.Argument(...)):
     """Approve a pending proposal (human action)."""
-    conn = _conn()
+    be = _backend()
     try:
-        store.approve_proposal(conn, proposal_id)
+        be.approve_proposal(proposal_id)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     console.print(f"Approved proposal #{proposal_id}")
 
 
 @kb_app.command("reject")
 def kb_reject(proposal_id: int = typer.Argument(...)):
     """Reject a pending proposal (human action)."""
-    conn = _conn()
+    be = _backend()
     try:
-        store.reject_proposal(conn, proposal_id)
+        be.reject_proposal(proposal_id)
     except store.StoreError as exc:
         _fail(str(exc))
-    finally:
-        conn.close()
     console.print(f"Rejected proposal #{proposal_id}")
+
+
+# --- Token commands ---------------------------------------------------------
+
+
+@token_app.command("create")
+def token_create(
+    name: str = typer.Argument(..., help="A label for this token, e.g. an agent name"),
+    admin: bool = typer.Option(False, "--admin", help="Grant admin (token/passkey management)"),
+    json_out: bool = typer.Option(False, "--json"),
+):
+    """Create an API token. The secret is shown once — copy it now."""
+    be = _backend()
+    try:
+        result = be.create_token(name, is_admin=admin)
+    except store.StoreError as exc:
+        _fail(str(exc))
+    if json_out:
+        _emit(result, True)
+        return
+    console.print(f"Created token [bold]#{result['id']}[/] [cyan]{result['name']}[/]"
+                  + (" [red](admin)[/]" if result.get("is_admin") else ""))
+    console.print(f"\n  [bold yellow]{result['token']}[/]\n")
+    console.print("[dim]Store it now — it will not be shown again. Use it with "
+                  "`issue login --token ...` or the ISSUE_TRACKER_TOKEN env var.[/]")
+
+
+@token_app.command("list")
+def token_list(json_out: bool = typer.Option(False, "--json")):
+    """List API tokens (never shows the secret)."""
+    be = _backend()
+    try:
+        rows = be.list_tokens()
+    except store.StoreError as exc:
+        _fail(str(exc))
+    if json_out:
+        _emit(rows, True)
+        return
+    if not rows:
+        console.print("[dim]No tokens.[/]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("#", justify="right")
+    table.add_column("name", style="cyan")
+    table.add_column("admin")
+    table.add_column("created", style="dim")
+    table.add_column("last used", style="dim")
+    for r in rows:
+        table.add_row(
+            str(r["id"]),
+            r["name"],
+            "yes" if r.get("is_admin") else "",
+            (r.get("created_at") or "").replace("T", " "),
+            (r.get("last_used_at") or "—").replace("T", " "),
+        )
+    console.print(table)
+
+
+@token_app.command("revoke")
+def token_revoke(token_id: int = typer.Argument(...)):
+    """Revoke an API token by id."""
+    be = _backend()
+    try:
+        be.revoke_token(token_id)
+    except store.StoreError as exc:
+        _fail(str(exc))
+    console.print(f"Revoked token #{token_id}")
 
 
 # --- Rendering helpers ------------------------------------------------------
@@ -772,9 +827,7 @@ def _print_comments(comments: list[dict]) -> None:
         return
     for c in comments:
         when = c["created_at"].replace("T", " ")
-        console.print(
-            f"[bold]#{c['id']}[/] [cyan]{c['author']}[/] [dim]{when}[/]"
-        )
+        console.print(f"[bold]#{c['id']}[/] [cyan]{c['author']}[/] [dim]{when}[/]")
         console.print(c["body"])
         console.print()
 
@@ -805,7 +858,7 @@ def _print_issue_table(issues: list[dict]) -> None:
             f"[{PRIORITY_STYLE.get(issue['priority'], 'white')}]{issue['priority']}[/]",
             f"[{STATUS_STYLE.get(issue['status'], 'white')}]{issue['status']}[/]",
             issue["title"],
-            issue["assignee"] or "",
+            issue.get("assignee") or "",
         )
     console.print(table)
 

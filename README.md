@@ -19,6 +19,10 @@ approves knowledge changes in a web UI.
 - **Live notifications** — an activity feed + toasts show what changed (new
   issues, comments, status changes, …) and **which agent did it**, with optional
   desktop notifications.
+- **Local or networked** — direct SQLite by default; or run it as a server and
+  have the CLI talk to it over HTTP. Optional auth: **API tokens** for
+  agents/CLI and **passkeys** (WebAuthn) for the web UI. Turnkey HTTPS deploy
+  (Docker + Caddy) — see [`DEPLOY.md`](DEPLOY.md).
 - **Local & private** — everything is one SQLite file in `.issues/` (git-ignored).
 
 ![graph view](docs/graph.png)
@@ -95,8 +99,15 @@ issue update ID [--title ...] [--status ...] [--priority ...] [--parent ...]
                [--branch ...] [--worktree ...] [--assignee ...] [--meta JSON]
 issue start ID | issue done ID | issue block ID
 issue rm ID [-y]
-issue version [--json]              # version, feature flags, active db path
+issue version [--json]              # version, feature flags, mode (local/remote)
 issue changes [--since TOKEN|TS] [--json]   # update sentinel (see below)
+
+# remote / auth
+issue login --server URL --token TOKEN   # point the CLI at a remote server
+issue logout                             # revert to the local database
+issue whoami                             # show local/remote + identity
+issue token create NAME [--admin]        # mint an API token (shown once)
+issue token list | issue token revoke ID
 issue activity [-n LIMIT] [--json]  # recent changes: who changed what
 issue --actor NAME <cmd> ...        # attribute changes (or set ISSUE_TRACKER_ACTOR)
 issue dep add BLOCKER BLOCKED       # BLOCKER must finish before BLOCKED
@@ -173,10 +184,33 @@ the feed. Attribute changes by setting `ISSUE_TRACKER_ACTOR` (or `issue --actor
 `X-Actor` request header). `GET /api/activity` and `issue activity` expose the
 same feed.
 
+### Networked deployment & auth
+
+By default everything is local and open. To share the tracker over the network:
+
+- **Run the server** anywhere (`issue serve`, or the Docker setup). Enable auth
+  with `ISSUE_TRACKER_AUTH=1`.
+- **Agents/CLI** authenticate with API tokens: `issue login --server <url>
+  --token <token>`, or set `ISSUE_TRACKER_SERVER` + `ISSUE_TRACKER_TOKEN`. A
+  token's name becomes its actor in the activity feed. Manage tokens with `issue
+  token create|list|revoke` (admin only).
+- **You/web** sign in with a **passkey** (WebAuthn). On first run the server
+  writes a one-time admin **bootstrap token** to `.issues/bootstrap-token.txt`;
+  use it to enroll your first passkey (and as a recovery path) and to mint agent
+  tokens.
+
+Auth model: a single human (one or more passkeys) plus named API tokens for
+agents. See [`DEPLOY.md`](DEPLOY.md) for a turnkey **Docker + Caddy** deploy with
+automatic HTTPS (required for passkeys).
+
 ### Configuration
 
 - `ISSUE_TRACKER_DB` — override the database path (default: `<repo>/.issues/tracker.db`).
-- `ISSUE_TRACKER_ACTOR` — name recorded as the author of changes in the activity feed.
+- `ISSUE_TRACKER_ACTOR` — name recorded as the author of changes (local mode).
+- `ISSUE_TRACKER_SERVER` / `ISSUE_TRACKER_TOKEN` — use a remote server + token.
+- `ISSUE_TRACKER_AUTH` — set to `1` on the server to require authentication.
+- `ISSUE_TRACKER_RP_ID` / `ISSUE_TRACKER_ORIGIN` — WebAuthn domain + origin
+  (e.g. `issues.supercortex.io` / `https://issues.supercortex.io`).
 
 ## Notes / possible extensions
 

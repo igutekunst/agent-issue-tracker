@@ -1,21 +1,29 @@
 // Reactive client-side store: fetches data, holds it, and subscribes to the
 // server's SSE change feed so every view refreshes live.
 import { reactive } from 'vue'
+import { startRegistration, startAuthentication } from '@simplewebauthn/browser'
 
-async function req(method, url, body) {
-  const opts = { method, headers: {} }
+async function req(method, url, body, headers) {
+  const opts = { method, headers: { ...(headers || {}) }, credentials: 'same-origin' }
   if (body !== undefined) {
     opts.headers['Content-Type'] = 'application/json'
     opts.body = JSON.stringify(body)
   }
   const res = await fetch(url, opts)
   if (!res.ok) {
+    if (res.status === 401) {
+      // Session missing/expired — surface the login screen.
+      store.authStatus.auth = true
+      store.authStatus.authenticated = false
+    }
     let detail = res.statusText
     try {
       const j = await res.json()
       detail = j.detail || detail
     } catch (_) {}
-    throw new Error(detail)
+    const e = new Error(detail)
+    e.status = res.status
+    throw e
   }
   if (res.status === 204) return null
   const text = await res.text()
@@ -40,12 +48,68 @@ export const store = reactive({
   toasts: [],
   osNotify: false,
 
+  // Auth. When `auth` is false the server is open (no login needed).
+  authStatus: { auth: false, authenticated: true, is_admin: true, has_passkey: false },
+  authError: '',
+
   get pendingCount() {
     return this.proposals.length
   },
 
   issueById(id) {
     return this.issues.find((i) => i.id === id)
+  },
+
+  // --- Auth ---
+  async loadAuthStatus() {
+    try {
+      this.authStatus = await req('GET', '/api/auth/status')
+    } catch (e) {
+      // If status itself fails, assume open so the app still tries to load.
+      this.authStatus = { auth: false, authenticated: true, is_admin: true }
+    }
+    return this.authStatus
+  },
+
+  async passkeyLogin() {
+    this.authError = ''
+    try {
+      const options = await req('POST', '/api/webauthn/login/begin')
+      const assertion = await startAuthentication({ optionsJSON: options })
+      await req('POST', '/api/webauthn/login/finish', { credential: assertion })
+      await this.loadAuthStatus()
+      return true
+    } catch (e) {
+      this.authError = e.message || 'passkey login failed'
+      return false
+    }
+  },
+
+  async passkeyRegister(token, name) {
+    this.authError = ''
+    const headers = { Authorization: `Bearer ${token.trim()}` }
+    try {
+      const options = await req('POST', '/api/webauthn/register/begin', undefined, headers)
+      const attestation = await startRegistration({ optionsJSON: options })
+      await req(
+        'POST',
+        '/api/webauthn/register/finish',
+        { credential: attestation, name: name || 'passkey' },
+        headers,
+      )
+      // Registered — immediately sign in to establish a session.
+      return await this.passkeyLogin()
+    } catch (e) {
+      this.authError = e.message || 'passkey registration failed'
+      return false
+    }
+  },
+
+  async logout() {
+    try {
+      await req('POST', '/api/auth/logout')
+    } catch (_) {}
+    this.authStatus.authenticated = false
   },
 
   async loadAll() {

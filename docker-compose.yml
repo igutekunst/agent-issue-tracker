@@ -1,0 +1,42 @@
+# Deploy the tracker with automatic HTTPS.
+#
+#   cp .env.example .env      # then edit DOMAIN
+#   docker compose up -d --build
+#
+# Caddy obtains a Let's Encrypt certificate for $DOMAIN automatically, so the
+# droplet's DNS A/AAAA record must already point at it and ports 80/443 be open.
+
+services:
+  app:
+    build: .
+    restart: unless-stopped
+    environment:
+      ISSUE_TRACKER_AUTH: "1"
+      ISSUE_TRACKER_DB: /data/tracker.db
+      ISSUE_TRACKER_RP_ID: ${DOMAIN}
+      ISSUE_TRACKER_ORIGIN: https://${DOMAIN}
+      ISSUE_TRACKER_RP_NAME: ${RP_NAME:-Agent Issue Tracker}
+    volumes:
+      - data:/data
+    expose:
+      - "8000"
+
+  caddy:
+    image: caddy:2
+    restart: unless-stopped
+    depends_on:
+      - app
+    ports:
+      - "80:80"
+      - "443:443"
+    environment:
+      DOMAIN: ${DOMAIN}
+    volumes:
+      - ./Caddyfile:/etc/caddy/Caddyfile:ro
+      - caddy_data:/data
+      - caddy_config:/config
+
+volumes:
+  data:
+  caddy_data:
+  caddy_config:

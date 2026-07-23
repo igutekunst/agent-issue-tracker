@@ -5,7 +5,7 @@ designed to be driven by coding agents via a CLI, and observed by
 humans via a web interface.
 """
 
-__version__ = "0.4.1"
+__version__ = "0.5.0"
 
 # Capability flags so an agent can check whether the build it is talking to has
 # a given feature, e.g. `issue version --json` -> features contains "kb-supersede".
@@ -29,4 +29,8 @@ FEATURES = [
     "activity-feed",
     "actor-attribution",
     "notifications",
+    "auth",
+    "api-tokens",
+    "passkeys",
+    "remote-cli",
 ]

@@ -80,6 +80,21 @@ issue done 12            # shows up as "Updated issue #12 — claude-worker-1"
 issue activity           # recent changes: who changed what, newest first
 ```
 
+## Local vs remote
+
+By default the CLI uses the local SQLite database. To use a shared/remote
+server, either run `issue login --server <url> --token <token>` once, or set:
+
+```bash
+export ISSUE_TRACKER_SERVER=https://issues.example.com
+export ISSUE_TRACKER_TOKEN=it_...      # your API token
+```
+
+Everything below works the same in either mode. On a remote server with auth
+enabled, your **token's name is used as the actor** automatically (no need to set
+`ISSUE_TRACKER_ACTOR`). If you get an authentication error, your token is missing
+or revoked — ask the human for a new one (`issue token create <name>`).
+
 ## Checking the build and polling for changes
 
 ```bash

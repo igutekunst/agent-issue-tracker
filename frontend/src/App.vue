@@ -8,6 +8,11 @@ import KnowledgePanel from './components/KnowledgePanel.vue'
 import MobileView from './components/MobileView.vue'
 import ActivityFeed from './components/ActivityFeed.vue'
 import Toasts from './components/Toasts.vue'
+import LoginView from './components/LoginView.vue'
+
+const needsLogin = computed(
+  () => store.authStatus.auth && !store.authStatus.authenticated,
+)
 
 const tab = ref('graph')
 const mobileTab = ref('issues')
@@ -93,16 +98,37 @@ watch(
   },
 )
 
+let started = false
+function startApp() {
+  if (started) return
+  started = true
+  store.loadAll()
+  store.connect()
+}
+
+async function boot() {
+  await store.loadAuthStatus()
+  if (!needsLogin.value) startApp()
+}
+
+// After a successful passkey login, start the live app.
+watch(needsLogin, (v) => {
+  if (!v) startApp()
+})
+
 onMounted(() => {
   window.history.replaceState({ nav: { ...EMPTY_NAV } }, '')
   window.addEventListener('popstate', onPopState)
-  store.loadAll()
-  store.connect()
+  boot()
 })
 onUnmounted(() => window.removeEventListener('popstate', onPopState))
 </script>
 
 <template>
+  <!-- ================= LOGIN GATE ================= -->
+  <LoginView v-if="needsLogin" />
+
+  <template v-else>
   <!-- ================= MOBILE ================= -->
   <template v-if="isMobile">
     <div class="topbar">
@@ -111,6 +137,14 @@ onUnmounted(() => window.removeEventListener('popstate', onPopState))
       <ActivityFeed @select="onSelectMobile" />
       <button class="layout-toggle" title="Switch to desktop layout" @click="toggleLayout">
         🖥
+      </button>
+      <button
+        v-if="store.authStatus.auth"
+        class="layout-toggle"
+        title="Log out"
+        @click="store.logout()"
+      >
+        ⎋
       </button>
       <div class="conn">
         <span class="dot" :class="{ on: store.connected }"></span>
@@ -175,6 +209,14 @@ onUnmounted(() => window.removeEventListener('popstate', onPopState))
       <button class="layout-toggle" title="Preview mobile layout" @click="toggleLayout">
         📱
       </button>
+      <button
+        v-if="store.authStatus.auth"
+        class="layout-toggle"
+        title="Log out"
+        @click="store.logout()"
+      >
+        ⎋
+      </button>
       <div class="conn">
         <span class="dot" :class="{ on: store.connected }"></span>
         {{ store.connected ? 'live' : 'offline' }}
@@ -200,6 +242,7 @@ onUnmounted(() => window.removeEventListener('popstate', onPopState))
 
   <!-- Live toasts (both layouts) -->
   <Toasts @select="selectAny" />
+  </template>
 </template>
 
 <style scoped>
