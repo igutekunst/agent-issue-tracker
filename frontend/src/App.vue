@@ -1,5 +1,5 @@
 <script setup>
-import { onMounted, ref, computed } from 'vue'
+import { onMounted, onUnmounted, ref, computed, watch } from 'vue'
 import { store } from './api.js'
 import GraphView from './components/GraphView.vue'
 import IssueList from './components/IssueList.vue'
@@ -10,6 +10,9 @@ import MobileView from './components/MobileView.vue'
 const tab = ref('graph')
 const mobileTab = ref('issues')
 const selectedId = ref(null)
+// The mobile drill-down path (stack of issue ids). Mirrored into the History
+// API so swipe-right / Back walks back up.
+const mobilePath = ref([])
 
 // Layout: auto by viewport, with a manual override so it can be previewed.
 const mq = window.matchMedia('(max-width: 760px)')
@@ -25,6 +28,7 @@ function toggleLayout() {
   override.value = !isMobile.value
 }
 
+// --- Desktop detail (no history entanglement) ---
 function select(id) {
   selectedId.value = id
 }
@@ -32,10 +36,65 @@ function closeDetail() {
   selectedId.value = null
 }
 
+// --- Mobile navigation backed by the History API ---
+// Each forward step (drill in, open a detail) pushes a history entry carrying
+// the full nav state; Back/swipe-right pops it and popstate replays the state.
+const EMPTY_NAV = { path: [], detail: null }
+
+function applyNav(nav) {
+  mobilePath.value = Array.isArray(nav?.path) ? nav.path : []
+  selectedId.value = nav?.detail ?? null
+}
+function pushNav(path, detail) {
+  mobilePath.value = path
+  selectedId.value = detail
+  window.history.pushState({ nav: { path, detail } }, '')
+}
+function onDrill(id) {
+  pushNav([...mobilePath.value, id], null)
+}
+function onSelectMobile(id) {
+  pushNav([...mobilePath.value], id)
+}
+function onUp() {
+  if (mobilePath.value.length || selectedId.value != null) window.history.back()
+}
+function onGoto(index) {
+  const delta = index + 1 - mobilePath.value.length
+  if (delta < 0) window.history.go(delta)
+}
+function onRoot() {
+  if (mobilePath.value.length) window.history.go(-mobilePath.value.length)
+}
+function mobileBack() {
+  window.history.back()
+}
+function onPopState(e) {
+  applyNav(e.state && e.state.nav ? e.state.nav : EMPTY_NAV)
+}
+
+// Keep the drill path valid if issues it points at get deleted elsewhere.
+watch(
+  () => store.issues,
+  () => {
+    const valid = mobilePath.value.filter((id) => store.issueById(id))
+    if (valid.length !== mobilePath.value.length) {
+      mobilePath.value = valid
+      window.history.replaceState(
+        { nav: { path: valid, detail: selectedId.value } },
+        '',
+      )
+    }
+  },
+)
+
 onMounted(() => {
+  window.history.replaceState({ nav: { ...EMPTY_NAV } }, '')
+  window.addEventListener('popstate', onPopState)
   store.loadAll()
   store.connect()
 })
+onUnmounted(() => window.removeEventListener('popstate', onPopState))
 </script>
 
 <template>
@@ -65,15 +124,23 @@ onMounted(() => {
       </button>
     </div>
     <div class="mcontent">
-      <MobileView v-if="mobileTab === 'issues'" @select="select" />
-      <KnowledgePanel v-else @select="select" />
+      <MobileView
+        v-if="mobileTab === 'issues'"
+        :path="mobilePath"
+        @drill="onDrill"
+        @select="onSelectMobile"
+        @up="onUp"
+        @goto="onGoto"
+        @root="onRoot"
+      />
+      <KnowledgePanel v-else @select="onSelectMobile" />
     </div>
     <IssueDetail
       v-if="selectedId !== null"
       :issue-id="selectedId"
       fullscreen
-      @close="closeDetail"
-      @select="select"
+      @close="mobileBack"
+      @select="onSelectMobile"
     />
   </template>
 

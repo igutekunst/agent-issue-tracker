@@ -1,23 +1,25 @@
 <script setup>
-import { ref, computed, watch } from 'vue'
+import { computed } from 'vue'
 import { store } from '../api.js'
 
 // A touch-friendly drill-down navigator. The root level shows epics (top-level
 // issues); one tap on an issue that has sub-issues drills down a level; tapping
-// a leaf opens its detail. Breadcrumbs walk back up.
-const emit = defineEmits(['select'])
-const path = ref([]) // stack of issue ids from root to current parent
+// a leaf opens its detail. The drill `path` is owned by the parent (App) so it
+// can be mirrored into the browser History API — that makes the mobile
+// swipe-right / hardware Back gesture walk back up the hierarchy.
+const props = defineProps({ path: { type: Array, default: () => [] } })
+const emit = defineEmits(['drill', 'select', 'up', 'goto', 'root'])
 
 const PRI_RANK = { P0: 0, P1: 1, P2: 2, P3: 3 }
 
 const currentParentId = computed(() =>
-  path.value.length ? path.value[path.value.length - 1] : null,
+  props.path.length ? props.path[props.path.length - 1] : null,
 )
 const currentIssue = computed(() =>
   currentParentId.value != null ? store.issueById(currentParentId.value) : null,
 )
 const crumbs = computed(() =>
-  path.value.map((id) => store.issueById(id)).filter(Boolean),
+  props.path.map((id) => store.issueById(id)).filter(Boolean),
 )
 
 const children = computed(() =>
@@ -31,38 +33,16 @@ function childCount(id) {
 }
 
 function tap(issue) {
-  if (childCount(issue.id) > 0) path.value = [...path.value, issue.id]
+  if (childCount(issue.id) > 0) emit('drill', issue.id)
   else emit('select', issue.id)
 }
-function drill(issue) {
-  path.value = [...path.value, issue.id]
-}
-function goRoot() {
-  path.value = []
-}
-function goTo(index) {
-  path.value = path.value.slice(0, index + 1)
-}
-function back() {
-  path.value = path.value.slice(0, -1)
-}
-
-// If the current parent disappears (deleted), pop back to a valid level.
-watch(
-  () => store.issues,
-  () => {
-    while (path.value.length && !store.issueById(path.value[path.value.length - 1])) {
-      path.value = path.value.slice(0, -1)
-    }
-  },
-)
 </script>
 
 <template>
   <div class="mobile-nav">
     <!-- Breadcrumb -->
     <div class="crumbs">
-      <button class="crumb" :class="{ active: !crumbs.length }" @click="goRoot">
+      <button class="crumb" :class="{ active: !crumbs.length }" @click="emit('root')">
         🗂 Epics
       </button>
       <template v-for="(c, idx) in crumbs" :key="c.id">
@@ -70,7 +50,7 @@ watch(
         <button
           class="crumb"
           :class="{ active: idx === crumbs.length - 1 }"
-          @click="goTo(idx)"
+          @click="emit('goto', idx)"
         >
           #{{ c.id }}
         </button>
@@ -87,7 +67,7 @@ watch(
           {{ currentIssue.status }}
         </span>
         <span class="spacer"></span>
-        <button class="ghost small" @click.stop="back">↑ up</button>
+        <button class="ghost small" @click.stop="emit('up')">↑ up</button>
       </div>
       <div class="pc-title">#{{ currentIssue.id }} {{ currentIssue.title }}</div>
       <div class="pc-hint muted">tap for full details ›</div>
