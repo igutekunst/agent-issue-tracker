@@ -15,7 +15,14 @@ from . import FEATURES, __version__, db, store
 
 STATIC_DIR = Path(__file__).parent / "static"
 
-app = FastAPI(title="Agent Issue Tracker", version="0.1.0")
+app = FastAPI(title="Agent Issue Tracker", version=__version__)
+
+
+@app.middleware("http")
+async def _attribute_actor(request: Request, call_next):
+    # Attribute web-originated changes; clients may override with an X-Actor header.
+    store.set_actor(request.headers.get("x-actor") or "web")
+    return await call_next(request)
 
 
 def _conn():
@@ -90,6 +97,15 @@ def meta():
 @app.get("/api/version")
 def version():
     return {"version": __version__, "features": FEATURES}
+
+
+@app.get("/api/activity")
+def api_activity(limit: int = 50):
+    conn = _conn()
+    try:
+        return store.activity(conn, limit=limit)
+    finally:
+        conn.close()
 
 
 @app.get("/api/changes")

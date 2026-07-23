@@ -33,6 +33,13 @@ export const store = reactive({
   // Bumped on every change event so per-issue views (e.g. comments) can refetch.
   changeVersion: 0,
 
+  // Notifications / activity feed.
+  activity: [],
+  activityMaxId: 0,
+  unread: 0,
+  toasts: [],
+  osNotify: false,
+
   get pendingCount() {
     return this.proposals.length
   },
@@ -65,13 +72,67 @@ export const store = reactive({
     es.addEventListener('hello', () => {
       this.connected = true
       this.loadAll()
+      this.loadActivity(true) // seed the feed without notifying
     })
     es.addEventListener('change', () => {
       this.changeVersion++
       this.loadAll()
+      this.loadActivity(false) // notify on anything new
     })
     es.onerror = () => {
       this.connected = false
+    }
+  },
+
+  async loadActivity(initial = false) {
+    let rows
+    try {
+      rows = await req('GET', '/api/activity?limit=50')
+    } catch (e) {
+      return
+    }
+    const fresh = rows.filter((r) => r.id > this.activityMaxId)
+    this.activity = rows
+    if (rows.length) {
+      this.activityMaxId = Math.max(this.activityMaxId, ...rows.map((r) => r.id))
+    }
+    if (!initial && fresh.length) {
+      // fresh is newest-first; emit oldest-first so the newest toast is on top.
+      for (const item of fresh.slice().reverse()) {
+        this.unread++
+        this.toast(item)
+        this.maybeOsNotify(item)
+      }
+    }
+  },
+
+  toast(item) {
+    const t = { ...item, key: `${item.id}-${this.toasts.length}` }
+    this.toasts.push(t)
+    setTimeout(() => {
+      this.toasts = this.toasts.filter((x) => x.key !== t.key)
+    }, 6000)
+  },
+
+  dismissToast(key) {
+    this.toasts = this.toasts.filter((x) => x.key !== key)
+  },
+
+  markActivityRead() {
+    this.unread = 0
+  },
+
+  async enableOsNotify() {
+    if (!('Notification' in window)) return
+    const perm = await Notification.requestPermission()
+    this.osNotify = perm === 'granted'
+  },
+
+  maybeOsNotify(item) {
+    if (this.osNotify && document.hidden && 'Notification' in window) {
+      new Notification('Agent Issue Tracker', {
+        body: item.actor ? `${item.text} · ${item.actor}` : item.text,
+      })
     }
   },
 

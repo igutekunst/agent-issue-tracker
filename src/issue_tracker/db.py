@@ -109,6 +109,7 @@ CREATE TABLE IF NOT EXISTS change_log (
     kind    TEXT NOT NULL,     -- e.g. 'issue', 'dependency', 'knowledge', 'proposal'
     action  TEXT NOT NULL,     -- e.g. 'created', 'updated', 'deleted', 'approved'
     ref     TEXT,              -- id or key of the affected entity
+    actor   TEXT,              -- who made the change (agent name / 'web'), if known
     ts      TEXT NOT NULL
 );
 
@@ -121,4 +122,12 @@ CREATE INDEX IF NOT EXISTS idx_comments_issue ON comments(issue_id);
 
 def _init_schema(conn: sqlite3.Connection) -> None:
     conn.executescript(SCHEMA)
+    _migrate(conn)
     conn.commit()
+
+
+def _migrate(conn: sqlite3.Connection) -> None:
+    """Small, idempotent migrations for databases created by older versions."""
+    cols = {row["name"] for row in conn.execute("PRAGMA table_info(change_log)")}
+    if "actor" not in cols:
+        conn.execute("ALTER TABLE change_log ADD COLUMN actor TEXT")

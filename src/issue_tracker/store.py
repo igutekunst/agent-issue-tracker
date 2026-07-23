@@ -7,12 +7,29 @@ web API.
 
 from __future__ import annotations
 
+import contextvars
 import json
+import os
 import sqlite3
 from datetime import datetime, timezone
-from typing import Any, Iterable
+from typing import Any
 
 from . import db
+
+# Who is making changes, used to attribute entries in the change feed. The web
+# server sets this per request (X-Actor header); CLI/agent processes can set the
+# ISSUE_TRACKER_ACTOR environment variable.
+_actor: contextvars.ContextVar[str | None] = contextvars.ContextVar(
+    "actor", default=None
+)
+
+
+def set_actor(actor: str | None) -> None:
+    _actor.set(actor or None)
+
+
+def _current_actor() -> str | None:
+    return _actor.get() or os.environ.get("ISSUE_TRACKER_ACTOR") or None
 
 # --- Vocabulary -------------------------------------------------------------
 
@@ -31,8 +48,8 @@ def _now() -> str:
 
 def _log(conn: sqlite3.Connection, kind: str, action: str, ref: Any) -> None:
     conn.execute(
-        "INSERT INTO change_log (kind, action, ref, ts) VALUES (?, ?, ?, ?)",
-        (kind, action, str(ref), _now()),
+        "INSERT INTO change_log (kind, action, ref, actor, ts) VALUES (?, ?, ?, ?, ?)",
+        (kind, action, str(ref), _current_actor(), _now()),
     )
 
 
@@ -534,6 +551,81 @@ def changes_since(conn: sqlite3.Connection, last_id: int) -> list[dict]:
 def latest_change_id(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM change_log").fetchone()
     return int(row["m"])
+
+
+def _issue_title(conn: sqlite3.Connection, ref: Any) -> str | None:
+    try:
+        row = conn.execute(
+            "SELECT title FROM issues WHERE id = ?", (int(ref),)
+        ).fetchone()
+    except (TypeError, ValueError):
+        return None
+    return row["title"] if row else None
+
+
+def _proposal_key(conn: sqlite3.Connection, ref: Any) -> str | None:
+    try:
+        row = conn.execute(
+            "SELECT key FROM knowledge_proposals WHERE id = ?", (int(ref),)
+        ).fetchone()
+    except (TypeError, ValueError):
+        return None
+    return row["key"] if row else None
+
+
+def _label(conn: sqlite3.Connection, c: dict) -> str:
+    kind, action, ref = c["kind"], c["action"], c["ref"]
+    if kind == "issue":
+        title = _issue_title(conn, ref)
+        suffix = f": {title}" if title else ""
+        if action == "created":
+            return f"New issue #{ref}{suffix}"
+        if action == "updated":
+            return f"Updated issue #{ref}{suffix}"
+        if action == "deleted":
+            return f"Deleted issue #{ref}"
+    if kind == "comment":
+        title = _issue_title(conn, ref)
+        suffix = f": {title}" if title else ""
+        if action == "created":
+            return f"New comment on #{ref}{suffix}"
+        if action == "deleted":
+            return f"Comment removed on #{ref}{suffix}"
+    if kind == "dependency":
+        verb = "added" if action == "created" else "removed"
+        return f"Dependency {verb} ({ref})"
+    if kind == "knowledge":
+        return f"Knowledge approved: {ref}"
+    if kind == "proposal":
+        key = _proposal_key(conn, ref)
+        suffix = f": {key}" if key else ""
+        if action == "created":
+            return f"Knowledge change proposed{suffix}"
+        if action == "superseded":
+            return f"Proposal #{ref} superseded"
+        if action == "resolved":
+            return f"Proposal #{ref} resolved"
+    return f"{kind} {action} {ref}"
+
+
+# Change-feed entries that duplicate another, more descriptive entry for the same
+# event, so the activity feed / notifications don't fire twice per action.
+_ACTIVITY_NOISE = {("proposal", "resolved"), ("proposal", "superseded")}
+
+
+def activity(conn: sqlite3.Connection, limit: int = 50) -> list[dict]:
+    """Recent change-feed entries, newest first, each with a human-readable text."""
+    rows = conn.execute(
+        "SELECT * FROM change_log ORDER BY id DESC LIMIT ?", (max(1, limit),)
+    ).fetchall()
+    out = []
+    for row in rows:
+        d = dict(row)
+        if (d["kind"], d["action"]) in _ACTIVITY_NOISE:
+            continue
+        d["text"] = _label(conn, d)
+        out.append(d)
+    return out
 
 
 def changes_since_ts(conn: sqlite3.Connection, ts: str) -> list[dict]:

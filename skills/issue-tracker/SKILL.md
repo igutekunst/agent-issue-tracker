@@ -68,12 +68,25 @@ issue dep rm 2 5
 Statuses: `open`, `in_progress`, `blocked`, `done`, `cancelled`.
 Priorities: `P0` (highest) .. `P3`.
 
+## Identify yourself (so the human sees who changed what)
+
+Set the `ISSUE_TRACKER_ACTOR` environment variable to your agent name (or pass
+`issue --actor <name> ...`). Every change you make is then attributed to you in
+the human's activity feed and live notifications.
+
+```bash
+export ISSUE_TRACKER_ACTOR=claude-worker-1
+issue done 12            # shows up as "Updated issue #12 — claude-worker-1"
+issue activity           # recent changes: who changed what, newest first
+```
+
 ## Checking the build and polling for changes
 
 ```bash
 issue version --json      # {version, features[], db} — confirm a capability is present
 issue changes --json      # {token, ...} — grab the current update token
 issue changes --since 42  # what changed since token 42 (or an ISO timestamp) + new token
+issue activity --json     # recent change feed with actor + human-readable text
 ```
 
 Use `issue changes` as an update sentinel when you'd rather poll than watch the

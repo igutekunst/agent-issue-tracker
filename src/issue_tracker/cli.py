@@ -50,8 +50,16 @@ def _main(
         is_eager=True,
         help="Show version and exit.",
     ),
+    actor: Optional[str] = typer.Option(
+        None,
+        "--actor",
+        help="Attribute changes to this name in the activity feed "
+        "(defaults to the ISSUE_TRACKER_ACTOR env var).",
+    ),
 ):
     """Hierarchical issue tracker + human-gated knowledge base for agents."""
+    if actor:
+        store.set_actor(actor)
 
 STATUS_STYLE = {
     "open": "white",
@@ -350,6 +358,36 @@ def next_cmd(json_out: bool = typer.Option(False, "--json")):
         console.print("[dim]No actionable issues. Everything is blocked or done.[/]")
         return
     _print_issue_table(actionable)
+
+
+@app.command()
+def activity(
+    limit: int = typer.Option(20, "--limit", "-n"),
+    json_out: bool = typer.Option(False, "--json"),
+):
+    """Show a feed of recent changes (who changed what)."""
+    conn = _conn()
+    try:
+        rows = store.activity(conn, limit=limit)
+    finally:
+        conn.close()
+    if json_out:
+        _emit(rows, True)
+        return
+    if not rows:
+        console.print("[dim]No activity yet.[/]")
+        return
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("when", style="dim")
+    table.add_column("actor", style="cyan")
+    table.add_column("change")
+    for r in rows:
+        table.add_row(
+            r["ts"].replace("T", " "),
+            r.get("actor") or "—",
+            r["text"],
+        )
+    console.print(table)
 
 
 @app.command()

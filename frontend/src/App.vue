@@ -6,6 +6,8 @@ import IssueList from './components/IssueList.vue'
 import IssueDetail from './components/IssueDetail.vue'
 import KnowledgePanel from './components/KnowledgePanel.vue'
 import MobileView from './components/MobileView.vue'
+import ActivityFeed from './components/ActivityFeed.vue'
+import Toasts from './components/Toasts.vue'
 
 const tab = ref('graph')
 const mobileTab = ref('issues')
@@ -69,6 +71,9 @@ function onRoot() {
 function mobileBack() {
   window.history.back()
 }
+function selectAny(id) {
+  isMobile.value ? onSelectMobile(id) : select(id)
+}
 function onPopState(e) {
   applyNav(e.state && e.state.nav ? e.state.nav : EMPTY_NAV)
 }
@@ -103,6 +108,7 @@ onUnmounted(() => window.removeEventListener('popstate', onPopState))
     <div class="topbar">
       <span class="brand">🧭 Tracker</span>
       <div class="spacer"></div>
+      <ActivityFeed @select="onSelectMobile" />
       <button class="layout-toggle" title="Switch to desktop layout" @click="toggleLayout">
         🖥
       </button>
@@ -165,6 +171,7 @@ onUnmounted(() => window.removeEventListener('popstate', onPopState))
         </button>
       </div>
       <div class="spacer"></div>
+      <ActivityFeed @select="select" />
       <button class="layout-toggle" title="Preview mobile layout" @click="toggleLayout">
         📱
       </button>
@@ -190,6 +197,9 @@ onUnmounted(() => window.removeEventListener('popstate', onPopState))
       />
     </div>
   </template>
+
+  <!-- Live toasts (both layouts) -->
+  <Toasts @select="selectAny" />
 </template>
 
 <style scoped>

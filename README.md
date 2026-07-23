@@ -16,6 +16,9 @@ approves knowledge changes in a web UI.
 - **Knowledge base** — a key/value store agents read freely but can only change
   with explicit **human approval**. Values can be long and are rendered as
   **markdown** (issue descriptions are too).
+- **Live notifications** — an activity feed + toasts show what changed (new
+  issues, comments, status changes, …) and **which agent did it**, with optional
+  desktop notifications.
 - **Local & private** — everything is one SQLite file in `.issues/` (git-ignored).
 
 ![graph view](docs/graph.png)
@@ -94,6 +97,8 @@ issue start ID | issue done ID | issue block ID
 issue rm ID [-y]
 issue version [--json]              # version, feature flags, active db path
 issue changes [--since TOKEN|TS] [--json]   # update sentinel (see below)
+issue activity [-n LIMIT] [--json]  # recent changes: who changed what
+issue --actor NAME <cmd> ...        # attribute changes (or set ISSUE_TRACKER_ACTOR)
 issue dep add BLOCKER BLOCKED       # BLOCKER must finish before BLOCKED
 issue dep rm  BLOCKER BLOCKED
 issue serve [--host H] [--port N] [--reload]
@@ -158,9 +163,20 @@ use next time. An ISO-8601 timestamp is also accepted as `--since`. `issue
 version --json` exposes a `features` list so an agent can confirm a build has a
 capability (e.g. `"kb-supersede"`) before relying on it.
 
+### Notifications & attribution
+
+The web UI has a 🔔 activity feed and raises live toasts as changes arrive over
+SSE, each labeled with what changed and **which actor made it**. Click a
+notification to jump to the issue; opt in to OS-level desktop notifications from
+the feed. Attribute changes by setting `ISSUE_TRACKER_ACTOR` (or `issue --actor
+<name>`); web-originated changes are recorded as `web` (override with an
+`X-Actor` request header). `GET /api/activity` and `issue activity` expose the
+same feed.
+
 ### Configuration
 
 - `ISSUE_TRACKER_DB` — override the database path (default: `<repo>/.issues/tracker.db`).
+- `ISSUE_TRACKER_ACTOR` — name recorded as the author of changes in the activity feed.
 
 ## Notes / possible extensions
 
