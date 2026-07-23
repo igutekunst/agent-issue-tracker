@@ -495,6 +495,141 @@ def serve(
     uvicorn.run("issue_tracker.app:app", host=host, port=port, reload=reload)
 
 
+# --- Export / import / migrate ----------------------------------------------
+
+
+@app.command()
+def export(
+    output: Optional[str] = typer.Option(
+        None, "--output", "-o", help="Write to this file instead of stdout"
+    ),
+):
+    """Dump the whole tracker (issues, deps, comments, KB) to a JSON document.
+
+    Exports whatever the CLI is pointed at — the local database, or the remote
+    server when logged in. Ids and timestamps are preserved so the document can
+    be re-imported faithfully with `issue import` (or `issue migrate`).
+    """
+    be = _backend()
+    try:
+        bundle = be.export()
+    except store.StoreError as exc:
+        _fail(str(exc))
+    text = jsonlib.dumps(bundle, indent=2, default=str)
+    if not output:
+        print(text)  # raw JSON so it can be piped or redirected
+        return
+    try:
+        Path(output).write_text(text + "\n")
+    except OSError as exc:
+        _fail(f"could not write {output!r}: {exc}")
+    c = bundle.get("counts", {})
+    console.print(
+        f"Exported [bold]{c.get('issues', 0)}[/] issues, "
+        f"{c.get('dependencies', 0)} deps, {c.get('comments', 0)} comments, "
+        f"{c.get('knowledge', 0)} kb entries to [cyan]{output}[/]"
+    )
+
+
+@app.command(name="import")
+def import_cmd(
+    source: str = typer.Argument(..., help="Export file to read, or '-' for stdin"),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+    json_out: bool = typer.Option(False, "--json"),
+):
+    """Load an exported JSON document into the tracker the CLI is pointed at.
+
+    Original ids are kept when none collide with existing issues; otherwise
+    everything is reinserted under fresh ids and parent/dependency/comment
+    references are remapped. Timestamps are always preserved.
+    """
+    try:
+        raw = sys.stdin.read() if source == "-" else Path(source).read_text()
+    except OSError as exc:
+        _fail(f"could not read {source!r}: {exc}")
+    try:
+        bundle = jsonlib.loads(raw)
+    except jsonlib.JSONDecodeError as exc:
+        _fail(f"{source!r} is not valid JSON: {exc}")
+
+    be = _backend()
+    dest = be.location or str(db.db_path())
+    counts = bundle.get("counts") or {}
+    if not yes:
+        typer.confirm(
+            f"Import {counts.get('issues', '?')} issues into {dest}?", abort=True
+        )
+    try:
+        stats = be.import_bundle(bundle)
+    except store.StoreError as exc:
+        _fail(str(exc))
+    if json_out:
+        _emit(stats, True)
+        return
+    console.print(
+        f"Imported [bold]{stats['issues']}[/] issues "
+        f"([dim]{stats['id_mode']} ids[/]), {stats['dependencies']} deps, "
+        f"{stats['comments']} comments, {stats['knowledge']} kb entries "
+        f"into [cyan]{dest}[/]"
+    )
+
+
+@app.command()
+def migrate(
+    to: Optional[str] = typer.Option(
+        None, "--to", help="Target server URL (default: the server you're logged in to)"
+    ),
+    token: Optional[str] = typer.Option(
+        None, "--token", "-t", help="Admin token for the target (default: saved token)"
+    ),
+    yes: bool = typer.Option(False, "--yes", "-y", help="Skip the confirmation prompt"),
+    json_out: bool = typer.Option(False, "--json"),
+):
+    """Copy the local database up to a remote tracker (local → remote).
+
+    Reads the local SQLite database regardless of any configured server, then
+    imports it into the target. Equivalent to `issue export` (local) piped into
+    `issue import` (remote), but in one step.
+    """
+    server = to or config.resolve_server()
+    if not server:
+        _fail("no target — pass --to URL (with --token), or run `issue login` first")
+    server = server.rstrip("/")
+    target = backends.RemoteBackend(server, token or config.resolve_token())
+    try:
+        who = target.whoami()
+    except store.StoreError as exc:
+        _fail(f"cannot reach {server}: {exc}")
+    if not who.get("is_admin"):
+        _fail(f"the token for {server} lacks admin rights (import requires admin)")
+
+    source = backends.LocalBackend()
+    try:
+        bundle = source.export()
+    except store.StoreError as exc:
+        _fail(f"reading local database: {exc}")
+    counts = bundle.get("counts", {})
+    if not yes:
+        typer.confirm(
+            f"Migrate {counts.get('issues', 0)} issues from the local db "
+            f"({db.db_path()}) to {server}?",
+            abort=True,
+        )
+    try:
+        stats = target.import_bundle(bundle)
+    except store.StoreError as exc:
+        _fail(str(exc))
+    if json_out:
+        _emit(stats, True)
+        return
+    console.print(
+        f"Migrated [bold]{stats['issues']}[/] issues "
+        f"([dim]{stats['id_mode']} ids[/]), {stats['dependencies']} deps, "
+        f"{stats['comments']} comments, {stats['knowledge']} kb entries "
+        f"to [green]{server}[/]"
+    )
+
+
 # --- Dependency commands ----------------------------------------------------
 
 

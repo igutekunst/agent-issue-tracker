@@ -73,6 +73,31 @@ Keep the bootstrap token somewhere safe — it's your recovery path if you lose
 your passkey device. You can also `issue token revoke <id>` it and rely on a
 fresh admin token later.
 
+## Migrating existing local issues to the server
+
+If you already have issues in a local `.issues/tracker.db`, push them up in one
+step from the project directory (needs an **admin** token for the target):
+
+```bash
+issue login --server https://issues.supercortex.io --token <admin-token>
+issue migrate            # reads the local db, imports it into the server
+```
+
+`migrate` always reads the local database regardless of the configured server,
+so it works even while you're logged in to the remote. Ids and timestamps are
+preserved when the server has no colliding issues; otherwise everything is
+reinserted under fresh ids with all parent/dependency/comment references
+remapped.
+
+For a portable dump (backup, or moving between two servers) use the underlying
+commands directly — `export`/`import` operate on whichever tracker the CLI is
+pointed at:
+
+```bash
+issue export -o backup.json      # dump the active tracker to JSON
+issue import backup.json         # load a dump into the active tracker
+```
+
 ## Everyday operations
 
 ```bash

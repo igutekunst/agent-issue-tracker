@@ -204,6 +204,29 @@ def api_changes(since: str | None = None):
         conn.close()
 
 
+# --- Export / import --------------------------------------------------------
+
+
+@app.get("/api/export")
+def api_export(request: Request):
+    _require_admin(request)
+    conn = _conn()
+    try:
+        return store.export_all(conn)
+    finally:
+        conn.close()
+
+
+@app.post("/api/import")
+def api_import(request: Request, bundle: dict):
+    _require_admin(request)
+    conn = _conn()
+    try:
+        return _guard(lambda: store.import_bundle(conn, bundle))
+    finally:
+        conn.close()
+
+
 # --- Issues -----------------------------------------------------------------
 
 

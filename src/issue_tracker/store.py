@@ -642,3 +642,209 @@ def changes_since_any(conn: sqlite3.Connection, since: str | int) -> list[dict]:
     if token.isdigit():
         return changes_since(conn, int(token))
     return changes_since_ts(conn, token)
+
+
+# --- Export / import --------------------------------------------------------
+
+EXPORT_FORMAT = "agent-issue-tracker-export"
+EXPORT_VERSION = 1
+
+# Issue columns carried by an export, in the order the raw insert expects.
+_ISSUE_COLUMNS = (
+    "id", "title", "description", "status", "priority", "parent_id",
+    "branch", "worktree", "assignee", "metadata", "created_at", "updated_at",
+)
+
+
+def export_all(conn: sqlite3.Connection) -> dict:
+    """Serialise the whole tracker (issues, deps, comments, KB) into a plain
+    dict suitable for JSON. Original ids and timestamps are preserved so the
+    document can be re-imported with full fidelity."""
+    issues = [
+        dict(r) for r in conn.execute(
+            "SELECT id, title, description, status, priority, parent_id, branch, "
+            "worktree, assignee, metadata, created_at, updated_at "
+            "FROM issues ORDER BY id"
+        ).fetchall()
+    ]
+    for it in issues:
+        try:
+            it["metadata"] = json.loads(it.get("metadata") or "{}")
+        except (json.JSONDecodeError, TypeError):
+            it["metadata"] = {}
+    deps = [
+        dict(r) for r in conn.execute(
+            "SELECT blocker_id, blocked_id FROM dependencies "
+            "ORDER BY blocker_id, blocked_id"
+        ).fetchall()
+    ]
+    comments = [
+        dict(r) for r in conn.execute(
+            "SELECT id, issue_id, author, body, created_at FROM comments ORDER BY id"
+        ).fetchall()
+    ]
+    knowledge = [
+        dict(r) for r in conn.execute(
+            "SELECT key, value, updated_at FROM knowledge ORDER BY key"
+        ).fetchall()
+    ]
+    return {
+        "format": EXPORT_FORMAT,
+        "version": EXPORT_VERSION,
+        "exported_at": _now(),
+        "counts": {
+            "issues": len(issues),
+            "dependencies": len(deps),
+            "comments": len(comments),
+            "knowledge": len(knowledge),
+        },
+        "issues": issues,
+        "dependencies": deps,
+        "comments": comments,
+        "knowledge": knowledge,
+    }
+
+
+def _order_parents_first(issues: list[dict]) -> list[dict]:
+    """Return issues ordered so every parent precedes its children (needed to
+    satisfy the parent_id foreign key on insert). Issues whose parent is not in
+    the set are treated as roots."""
+    by_id = {it["id"]: it for it in issues}
+    ordered: list[dict] = []
+    placed: set = set()
+
+    def place(it: dict, stack: set) -> None:
+        iid = it["id"]
+        if iid in placed:
+            return
+        if iid in stack:  # defensive: parent cycle should never happen
+            return
+        parent = it.get("parent_id")
+        if parent is not None and parent in by_id and parent not in placed:
+            place(by_id[parent], stack | {iid})
+        ordered.append(it)
+        placed.add(iid)
+
+    for it in issues:
+        place(it, set())
+    return ordered
+
+
+def import_bundle(conn: sqlite3.Connection, bundle: dict) -> dict:
+    """Insert an exported bundle into this database, preserving timestamps.
+
+    Original ids are kept verbatim when none of them collide with existing
+    issues (the clean-migration case); otherwise every issue is reinserted
+    under a fresh id and parent/dependency/comment references are remapped.
+    Returns a stats dict describing what happened."""
+    fmt = bundle.get("format")
+    if fmt != EXPORT_FORMAT:
+        raise StoreError(
+            f"Not an issue-tracker export (format={fmt!r}); expected {EXPORT_FORMAT!r}"
+        )
+    if bundle.get("version") != EXPORT_VERSION:
+        raise StoreError(
+            f"Unsupported export version {bundle.get('version')!r}; "
+            f"this build reads version {EXPORT_VERSION}"
+        )
+
+    issues = list(bundle.get("issues") or [])
+    for it in issues:
+        if not (it.get("title") or "").strip():
+            raise StoreError(f"Issue #{it.get('id')} has an empty title")
+        if it.get("status") not in STATUSES:
+            raise StoreError(f"Issue #{it.get('id')} has invalid status {it.get('status')!r}")
+        if it.get("priority") not in PRIORITIES:
+            raise StoreError(
+                f"Issue #{it.get('id')} has invalid priority {it.get('priority')!r}"
+            )
+
+    existing = {r["id"] for r in conn.execute("SELECT id FROM issues").fetchall()}
+    incoming = {it["id"] for it in issues}
+    keep_ids = existing.isdisjoint(incoming)
+
+    id_map: dict[int, int] = {}
+    now = _now()
+    for it in _order_parents_first(issues):
+        old_id = it["id"]
+        parent = it.get("parent_id")
+        new_parent = id_map.get(parent) if parent is not None else None
+        metadata = it.get("metadata")
+        if isinstance(metadata, (dict, list)):
+            metadata = json.dumps(metadata)
+        elif metadata is None:
+            metadata = "{}"
+        values = (
+            it.get("description") or "",
+            it["status"],
+            it["priority"],
+            new_parent,
+            it.get("branch"),
+            it.get("worktree"),
+            it.get("assignee"),
+            metadata,
+            it.get("created_at") or now,
+            it.get("updated_at") or it.get("created_at") or now,
+        )
+        if keep_ids:
+            cur = conn.execute(
+                "INSERT INTO issues (id, title, description, status, priority, "
+                "parent_id, branch, worktree, assignee, metadata, created_at, "
+                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (old_id, it["title"], *values),
+            )
+        else:
+            cur = conn.execute(
+                "INSERT INTO issues (title, description, status, priority, "
+                "parent_id, branch, worktree, assignee, metadata, created_at, "
+                "updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (it["title"], *values),
+            )
+        id_map[old_id] = old_id if keep_ids else cur.lastrowid
+
+    dep_count = 0
+    for dep in bundle.get("dependencies") or []:
+        b, d = id_map.get(dep.get("blocker_id")), id_map.get(dep.get("blocked_id"))
+        if b is None or d is None:
+            continue
+        conn.execute(
+            "INSERT OR IGNORE INTO dependencies (blocker_id, blocked_id) VALUES (?, ?)",
+            (b, d),
+        )
+        dep_count += 1
+
+    comment_count = 0
+    for c in bundle.get("comments") or []:
+        target = id_map.get(c.get("issue_id"))
+        if target is None or not (c.get("body") or "").strip():
+            continue
+        conn.execute(
+            "INSERT INTO comments (issue_id, author, body, created_at) "
+            "VALUES (?, ?, ?, ?)",
+            (target, c.get("author") or "agent", c["body"], c.get("created_at") or now),
+        )
+        comment_count += 1
+
+    kb_count = 0
+    for k in bundle.get("knowledge") or []:
+        key = (k.get("key") or "").strip()
+        if not key:
+            continue
+        conn.execute(
+            "INSERT INTO knowledge (key, value, updated_at) VALUES (?, ?, ?) "
+            "ON CONFLICT(key) DO UPDATE SET value = excluded.value, "
+            "updated_at = excluded.updated_at",
+            (key, k.get("value") or "", k.get("updated_at") or now),
+        )
+        kb_count += 1
+
+    _log(conn, "import", "completed", len(id_map))
+    conn.commit()
+    return {
+        "id_mode": "preserved" if keep_ids else "remapped",
+        "issues": len(id_map),
+        "dependencies": dep_count,
+        "comments": comment_count,
+        "knowledge": kb_count,
+        "id_map": id_map,
+    }

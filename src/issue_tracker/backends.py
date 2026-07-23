@@ -129,6 +129,13 @@ class LocalBackend:
     def whoami(self):
         return {"principal": None, "is_admin": True, "mode": "local"}
 
+    # export / import
+    def export(self):
+        return self._do(store.export_all)
+
+    def import_bundle(self, bundle):
+        return self._do(lambda c: store.import_bundle(c, bundle))
+
     # tokens (local admin: operate directly)
     def list_tokens(self):
         from . import auth
@@ -283,6 +290,13 @@ class RemoteBackend:
 
     def whoami(self):
         return self._request("GET", "/api/whoami")
+
+    # export / import
+    def export(self):
+        return self._request("GET", "/api/export")
+
+    def import_bundle(self, bundle):
+        return self._request("POST", "/api/import", body=bundle)
 
     # tokens
     def list_tokens(self):
