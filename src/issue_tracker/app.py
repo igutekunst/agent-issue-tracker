@@ -7,7 +7,7 @@ import json
 from pathlib import Path
 
 from fastapi import FastAPI, HTTPException, Request, Response
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
@@ -371,6 +371,16 @@ def _sse(event: str, data: dict) -> str:
 # --- Static SPA (mounted last so API routes take precedence) ----------------
 
 if STATIC_DIR.exists():
+
+    @app.get("/", include_in_schema=False)
+    def _index():
+        # Never cache the HTML entry point, so a rebuilt bundle (hashed assets
+        # referenced by a fresh index.html) is always picked up on reload.
+        return FileResponse(
+            str(STATIC_DIR / "index.html"),
+            headers={"Cache-Control": "no-store"},
+        )
+
     app.mount("/", StaticFiles(directory=str(STATIC_DIR), html=True), name="static")
 else:
 
