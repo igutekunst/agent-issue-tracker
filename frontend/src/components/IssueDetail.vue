@@ -1,11 +1,20 @@
 <script setup>
 import { computed, ref } from 'vue'
+import { marked } from 'marked'
+import DOMPurify from 'dompurify'
 import { store } from '../api.js'
 
 const props = defineProps({ issueId: Number })
 const emit = defineEmits(['close', 'select'])
 
 const issue = computed(() => store.issueById(props.issueId))
+
+marked.setOptions({ gfm: true, breaks: true })
+const renderedDescription = computed(() => {
+  const src = issue.value?.description
+  if (!src || !src.trim()) return ''
+  return DOMPurify.sanitize(marked.parse(src))
+})
 const editing = ref(false)
 const draft = ref({})
 const newBlockerId = ref(null)
@@ -96,7 +105,11 @@ function title(id) {
         <span class="chip st" :class="'st-' + issue.status">{{ issue.status }}</span>
         <span v-if="issue.actionable" class="chip ready">ready</span>
       </div>
-      <p class="desc" v-if="issue.description">{{ issue.description }}</p>
+      <div
+        class="desc markdown-body"
+        v-if="renderedDescription"
+        v-html="renderedDescription"
+      ></div>
       <p class="desc muted" v-else>No description.</p>
 
       <dl>
@@ -225,10 +238,86 @@ h3 {
 .chip.st { border-color: currentColor; }
 .chip.ready { color: var(--status-done); border-color: var(--status-done); }
 .desc {
-  white-space: pre-wrap;
-  line-height: 1.5;
+  line-height: 1.55;
   margin: 0 0 14px;
 }
+.desc.muted {
+  white-space: pre-wrap;
+}
+
+/* Rendered markdown (v-html, so styled via :deep) */
+.markdown-body :deep(> *:first-child) { margin-top: 0; }
+.markdown-body :deep(> *:last-child) { margin-bottom: 0; }
+.markdown-body :deep(h1),
+.markdown-body :deep(h2),
+.markdown-body :deep(h3),
+.markdown-body :deep(h4) {
+  margin: 16px 0 8px;
+  line-height: 1.3;
+  font-weight: 600;
+}
+.markdown-body :deep(h1) { font-size: 18px; }
+.markdown-body :deep(h2) { font-size: 16px; }
+.markdown-body :deep(h3) { font-size: 14px; }
+.markdown-body :deep(h4) { font-size: 13px; color: var(--text-dim); }
+.markdown-body :deep(p) { margin: 0 0 10px; }
+.markdown-body :deep(ul),
+.markdown-body :deep(ol) { margin: 0 0 10px; padding-left: 22px; }
+.markdown-body :deep(li) { margin: 2px 0; }
+.markdown-body :deep(li:has(> input[type='checkbox'])) {
+  list-style: none;
+  margin-left: -18px;
+}
+.markdown-body :deep(input[type='checkbox']) {
+  width: auto;
+  margin: 0 6px 0 0;
+  vertical-align: middle;
+}
+.markdown-body :deep(a) { color: var(--accent); }
+.markdown-body :deep(code) {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 12.5px;
+  background: var(--bg-elev2);
+  padding: 1px 5px;
+  border-radius: 4px;
+}
+.markdown-body :deep(pre) {
+  background: var(--bg);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  padding: 10px 12px;
+  overflow-x: auto;
+  margin: 0 0 10px;
+}
+.markdown-body :deep(pre code) {
+  background: none;
+  padding: 0;
+  font-size: 12.5px;
+}
+.markdown-body :deep(blockquote) {
+  margin: 0 0 10px;
+  padding: 2px 12px;
+  border-left: 3px solid var(--border);
+  color: var(--text-dim);
+}
+.markdown-body :deep(hr) {
+  border: none;
+  border-top: 1px solid var(--border);
+  margin: 14px 0;
+}
+.markdown-body :deep(table) {
+  border-collapse: collapse;
+  margin: 0 0 10px;
+  display: block;
+  overflow-x: auto;
+}
+.markdown-body :deep(th),
+.markdown-body :deep(td) {
+  border: 1px solid var(--border);
+  padding: 4px 8px;
+  text-align: left;
+}
+.markdown-body :deep(img) { max-width: 100%; }
 dl {
   display: grid;
   grid-template-columns: auto 1fr;
