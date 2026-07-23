@@ -86,6 +86,19 @@ issue kb propose-delete stale.key -n "no longer true"
 issue kb pending [--json]               # see what's awaiting approval
 ```
 
+**Values may be long and use markdown** (headings, lists, tables, code fences,
+links) — they render as formatted markdown in the web UI. For multi-line values,
+avoid shell-quoting pain by reading the value from a file or stdin:
+
+```bash
+issue kb propose runbook.deploy --file NOTES.md -n "deploy runbook"
+issue kb propose runbook.deploy -f - -n "deploy runbook" <<'EOF'
+# Deploy runbook
+1. Tag the release
+2. Run the pipeline
+EOF
+```
+
 **Do not assume a proposed value is live.** After `kb propose`, the value only
 takes effect once a human approves it. If you need a fact that isn't approved
 yet, tell the human it's pending rather than acting on the proposed value.

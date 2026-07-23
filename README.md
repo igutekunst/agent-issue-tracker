@@ -11,7 +11,8 @@ approves knowledge changes in a web UI.
 - **Web interface** — a Gantt-like left-to-right dependency graph (Cytoscape),
   an issue board, and a knowledge approval queue, all updating **live over SSE**.
 - **Knowledge base** — a key/value store agents read freely but can only change
-  with explicit **human approval**.
+  with explicit **human approval**. Values can be long and are rendered as
+  **markdown** (issue descriptions are too).
 - **Local & private** — everything is one SQLite file in `.issues/` (git-ignored).
 
 ![graph view](docs/graph.png)
@@ -95,6 +96,7 @@ issue serve [--host H] [--port N] [--reload]
 issue kb list [--json]
 issue kb get KEY [--json]
 issue kb propose KEY VALUE [-n NOTE]      # queue a change for human approval
+issue kb propose KEY --file NOTES.md      # value from a file ('-f -' for stdin)
 issue kb propose-delete KEY [-n NOTE]
 issue kb pending [--json]                 # what's awaiting approval
 issue kb approve ID | issue kb reject ID  # human action (also in the web UI)

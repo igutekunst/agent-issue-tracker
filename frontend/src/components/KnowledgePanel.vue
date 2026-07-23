@@ -1,6 +1,7 @@
 <script setup>
 import { ref } from 'vue'
 import { store } from '../api.js'
+import { renderMarkdown as md } from '../markdown.js'
 
 const draft = ref({ key: '', value: '', note: '' })
 
@@ -48,17 +49,17 @@ async function reject(id) {
           <span class="muted by">— {{ p.author }}</span>
         </div>
         <div class="diff">
-          <div class="diff-row" v-if="p.current_value !== null">
-            <span class="lbl old">current</span>
-            <span class="val old">{{ p.current_value }}</span>
+          <div class="diff-block old" v-if="p.current_value !== null">
+            <span class="lbl">current</span>
+            <div class="val markdown-body" v-html="md(p.current_value)"></div>
           </div>
-          <div class="diff-row" v-if="p.operation === 'set'">
-            <span class="lbl new">proposed</span>
-            <span class="val new">{{ p.proposed_value }}</span>
+          <div class="diff-block new" v-if="p.operation === 'set'">
+            <span class="lbl">proposed</span>
+            <div class="val markdown-body" v-html="md(p.proposed_value)"></div>
           </div>
-          <div class="diff-row" v-else>
-            <span class="lbl del">proposed</span>
-            <span class="val del">(delete this key)</span>
+          <div class="diff-block del" v-else>
+            <span class="lbl">proposed</span>
+            <div class="val">(delete this key)</div>
           </div>
         </div>
         <p v-if="p.note" class="note">📝 {{ p.note }}</p>
@@ -71,18 +72,15 @@ async function reject(id) {
 
     <section class="approved">
       <h3>Approved values</h3>
-      <table v-if="store.knowledge.length">
-        <thead>
-          <tr><th>key</th><th>value</th><th>updated</th></tr>
-        </thead>
-        <tbody>
-          <tr v-for="k in store.knowledge" :key="k.key">
-            <td class="mono">{{ k.key }}</td>
-            <td class="val-cell">{{ k.value }}</td>
-            <td class="muted mono small">{{ k.updated_at.replace('T', ' ') }}</td>
-          </tr>
-        </tbody>
-      </table>
+      <div v-if="store.knowledge.length" class="entries">
+        <div v-for="k in store.knowledge" :key="k.key" class="entry">
+          <div class="entry-head">
+            <span class="mono key">{{ k.key }}</span>
+            <span class="muted small">{{ k.updated_at.replace('T', ' ') }}</span>
+          </div>
+          <div class="val markdown-body" v-html="md(k.value)"></div>
+        </div>
+      </div>
       <p v-else class="muted">No approved entries yet.</p>
     </section>
 
@@ -90,13 +88,17 @@ async function reject(id) {
       <h3>Propose a change</h3>
       <div class="pform">
         <input v-model="draft.key" placeholder="key (e.g. deploy.url)" class="mono" />
-        <input v-model="draft.value" placeholder="value" />
-        <input v-model="draft.note" placeholder="note (why?)" />
+        <textarea
+          v-model="draft.value"
+          placeholder="value — markdown supported (headings, lists, code, links…)"
+          rows="5"
+        ></textarea>
+        <input v-model="draft.note" placeholder="note (why this change?)" />
         <button class="primary" @click="propose">Propose</button>
       </div>
       <p class="muted small">
-        Even changes you make here enter the approval queue — nothing mutates the
-        store without an explicit approval.
+        Values can be long and use markdown. Even changes you make here enter the
+        approval queue — nothing mutates the store without an explicit approval.
       </p>
     </section>
   </div>
@@ -141,32 +143,40 @@ code {
 .diff {
   display: flex;
   flex-direction: column;
-  gap: 3px;
-  margin: 6px 0;
+  gap: 8px;
+  margin: 8px 0;
 }
-.diff-row {
-  display: flex;
-  gap: 10px;
-  align-items: baseline;
+.diff-block {
+  border-radius: 6px;
+  border: 1px solid var(--border);
+  padding: 8px 10px;
 }
-.lbl {
-  width: 68px;
-  flex-shrink: 0;
+.diff-block .lbl {
+  display: block;
   font-size: 11px;
-  text-align: right;
+  text-transform: uppercase;
+  letter-spacing: 0.3px;
   color: var(--text-dim);
+  margin-bottom: 4px;
 }
-.val {
-  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+.diff-block .val {
   font-size: 13px;
-  padding: 2px 8px;
-  border-radius: 4px;
-  white-space: pre-wrap;
   word-break: break-word;
 }
-.val.old { background: #f8514922; text-decoration: line-through; color: #ffb0ab; }
-.val.new { background: #3fb95022; color: #96f0a8; }
-.val.del { background: #f8514922; color: #ffb0ab; }
+.diff-block.old {
+  background: #f8514914;
+  border-color: #f8514955;
+}
+.diff-block.old .lbl { color: #ffb0ab; }
+.diff-block.new {
+  background: #3fb95014;
+  border-color: #3fb95055;
+}
+.diff-block.new .lbl { color: #96f0a8; }
+.diff-block.del {
+  background: #f8514914;
+  border-color: #f8514955;
+}
 .note {
   font-size: 13px;
   color: var(--text-dim);
@@ -175,35 +185,37 @@ code {
 .pactions {
   display: flex;
   gap: 8px;
-  margin-top: 8px;
+  margin-top: 10px;
 }
 .pactions button { width: auto; }
-table {
-  width: 100%;
-  border-collapse: collapse;
+.entries {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
 }
-th {
-  text-align: left;
-  color: var(--text-dim);
-  font-weight: 600;
-  font-size: 12px;
-  padding: 6px 8px;
+.entry {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev);
+  padding: 10px 12px;
+}
+.entry-head {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 6px;
+  padding-bottom: 6px;
   border-bottom: 1px solid var(--border);
 }
-td {
-  padding: 7px 8px;
-  border-bottom: 1px solid var(--border);
-  vertical-align: top;
-}
-.val-cell { white-space: pre-wrap; word-break: break-word; }
+.entry .key { font-size: 13px; }
+.entry .val { font-size: 13.5px; }
 .mono { font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
 .small { font-size: 12px; }
 .pform {
-  display: grid;
-  grid-template-columns: 1fr 1fr auto;
+  display: flex;
+  flex-direction: column;
   gap: 8px;
-  align-items: center;
 }
-.pform input:nth-child(1) { grid-column: 1; }
-.pform button { width: auto; white-space: nowrap; }
+.pform button { width: auto; align-self: flex-start; white-space: nowrap; }
 </style>

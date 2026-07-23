@@ -7,6 +7,8 @@ output is human-readable by default and JSON-friendly with ``--json``.
 from __future__ import annotations
 
 import json as jsonlib
+import sys
+from pathlib import Path
 from typing import Optional
 
 import typer
@@ -394,12 +396,33 @@ def kb_list(json_out: bool = typer.Option(False, "--json")):
 @kb_app.command("propose")
 def kb_propose(
     key: str = typer.Argument(...),
-    value: str = typer.Argument(...),
+    value: Optional[str] = typer.Argument(
+        None, help="Value; omit and use --file/-f to read from a file or stdin"
+    ),
+    file: Optional[str] = typer.Option(
+        None, "--file", "-f", help="Read the value from this file, or '-' for stdin"
+    ),
     note: str = typer.Option("", "--note", "-n", help="Why this change?"),
     author: str = typer.Option("agent", "--author"),
     json_out: bool = typer.Option(False, "--json"),
 ):
-    """Propose setting KEY=VALUE. Requires human approval in the web UI."""
+    """Propose setting KEY=VALUE. Requires human approval in the web UI.
+
+    Values may be long and use markdown. For multi-line values, pass --file
+    (or '-f -' to read from stdin) instead of a shell-quoted argument.
+    """
+    if file is not None:
+        if value is not None:
+            _fail("Pass either VALUE or --file, not both")
+        try:
+            if file == "-":
+                value = sys.stdin.read()
+            else:
+                value = Path(file).read_text()
+        except OSError as exc:
+            _fail(f"Could not read value from {file!r}: {exc}")
+    if value is None:
+        _fail("Provide a VALUE argument or --file")
     conn = _conn()
     try:
         proposal = store.kb_propose(
