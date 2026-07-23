@@ -30,6 +30,8 @@ export const store = reactive({
   meta: { statuses: [], priorities: [] },
   connected: false,
   error: '',
+  // Bumped on every change event so per-issue views (e.g. comments) can refetch.
+  changeVersion: 0,
 
   get pendingCount() {
     return this.proposals.length
@@ -64,7 +66,10 @@ export const store = reactive({
       this.connected = true
       this.loadAll()
     })
-    es.addEventListener('change', () => this.loadAll())
+    es.addEventListener('change', () => {
+      this.changeVersion++
+      this.loadAll()
+    })
     es.onerror = () => {
       this.connected = false
     }
@@ -88,6 +93,15 @@ export const store = reactive({
       'DELETE',
       `/api/dependencies?blocker_id=${blocker_id}&blocked_id=${blocked_id}`,
     )
+  },
+  getComments(issueId) {
+    return req('GET', `/api/issues/${issueId}/comments`)
+  },
+  addComment(issueId, payload) {
+    return req('POST', `/api/issues/${issueId}/comments`, payload)
+  },
+  deleteComment(commentId) {
+    return req('DELETE', `/api/comments/${commentId}`)
   },
   propose(payload) {
     return req('POST', '/api/knowledge/proposals', payload)

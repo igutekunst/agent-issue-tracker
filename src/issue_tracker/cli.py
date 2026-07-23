@@ -25,8 +25,10 @@ app = typer.Typer(
 )
 dep_app = typer.Typer(help="Manage dependencies between issues.", no_args_is_help=True)
 kb_app = typer.Typer(help="Knowledge base (human-approved key/value store).", no_args_is_help=True)
+comment_app = typer.Typer(help="Add and read notes/comments on issues.", no_args_is_help=True)
 app.add_typer(dep_app, name="dep")
 app.add_typer(kb_app, name="kb")
+app.add_typer(comment_app, name="comment")
 
 console = Console()
 err = Console(stderr=True)
@@ -53,6 +55,20 @@ def _fail(msg: str) -> None:
 def _emit(data, as_json: bool) -> None:
     if as_json:
         console.print_json(jsonlib.dumps(data, default=str))
+
+
+def _value_or_file(value: Optional[str], file: Optional[str], what: str = "VALUE") -> str:
+    """Resolve a body from a positional arg, a --file path, or '-' for stdin."""
+    if file is not None:
+        if value is not None:
+            _fail(f"Pass either {what} or --file, not both")
+        try:
+            return sys.stdin.read() if file == "-" else Path(file).read_text()
+        except OSError as exc:
+            _fail(f"Could not read {what.lower()} from {file!r}: {exc}")
+    if value is None:
+        _fail(f"Provide a {what} argument or --file")
+    return value
 
 
 # --- Issue commands ---------------------------------------------------------
@@ -131,10 +147,20 @@ def show(
         blockers = store.blockers_for(conn, issue_id)
         blocks = store.blocked_by_for(conn, issue_id)
         children = [c["id"] for c in store.list_issues(conn, parent_id=issue_id)]
+        comments = store.list_comments(conn, issue_id)
     finally:
         conn.close()
     if json_out:
-        _emit({**issue, "blockers": blockers, "blocks": blocks, "children": children}, True)
+        _emit(
+            {
+                **issue,
+                "blockers": blockers,
+                "blocks": blocks,
+                "children": children,
+                "comments": comments,
+            },
+            True,
+        )
         return
     console.print(f"[bold]#{issue['id']}[/] {issue['title']}")
     _kv("status", issue["status"], STATUS_STYLE.get(issue["status"], "white"))
@@ -158,6 +184,10 @@ def show(
     if issue["description"]:
         console.print()
         console.print(issue["description"])
+    if comments:
+        console.print()
+        console.print(f"[dim]── {len(comments)} comment(s) ──[/]")
+        _print_comments(comments)
 
 
 @app.command()
@@ -352,6 +382,73 @@ def dep_rm(
     console.print(f"Removed #{blocker} -> #{blocked}")
 
 
+# --- Comment commands -------------------------------------------------------
+
+
+@comment_app.command("add")
+def comment_add(
+    issue_id: int = typer.Argument(...),
+    body: Optional[str] = typer.Argument(
+        None, help="Comment text; omit and use --file/-f to read a file or stdin"
+    ),
+    file: Optional[str] = typer.Option(
+        None, "--file", "-f", help="Read the comment from this file, or '-' for stdin"
+    ),
+    author: str = typer.Option("agent", "--author", "-a"),
+    json_out: bool = typer.Option(False, "--json"),
+):
+    """Add a note/comment to an issue. Body may be long and use markdown."""
+    body = _value_or_file(body, file, "BODY")
+    conn = _conn()
+    try:
+        comment = store.add_comment(conn, issue_id, body=body, author=author)
+    except store.StoreError as exc:
+        _fail(str(exc))
+    finally:
+        conn.close()
+    if json_out:
+        _emit(comment, True)
+    else:
+        console.print(f"Added comment [bold]#{comment['id']}[/] to issue #{issue_id}")
+
+
+@comment_app.command("list")
+def comment_list(
+    issue_id: int = typer.Argument(...),
+    json_out: bool = typer.Option(False, "--json"),
+):
+    """List the comments on an issue."""
+    conn = _conn()
+    try:
+        if store.get_issue(conn, issue_id) is None:
+            _fail(f"Issue #{issue_id} not found")
+        comments = store.list_comments(conn, issue_id)
+    finally:
+        conn.close()
+    if json_out:
+        _emit(comments, True)
+        return
+    _print_comments(comments)
+
+
+@comment_app.command("rm")
+def comment_rm(
+    comment_id: int = typer.Argument(...),
+    yes: bool = typer.Option(False, "--yes", "-y"),
+):
+    """Delete a comment by its id."""
+    if not yes:
+        typer.confirm(f"Delete comment #{comment_id}?", abort=True)
+    conn = _conn()
+    try:
+        store.delete_comment(conn, comment_id)
+    except store.StoreError as exc:
+        _fail(str(exc))
+    finally:
+        conn.close()
+    console.print(f"Deleted comment #{comment_id}")
+
+
 # --- Knowledge base commands ------------------------------------------------
 
 
@@ -411,18 +508,7 @@ def kb_propose(
     Values may be long and use markdown. For multi-line values, pass --file
     (or '-f -' to read from stdin) instead of a shell-quoted argument.
     """
-    if file is not None:
-        if value is not None:
-            _fail("Pass either VALUE or --file, not both")
-        try:
-            if file == "-":
-                value = sys.stdin.read()
-            else:
-                value = Path(file).read_text()
-        except OSError as exc:
-            _fail(f"Could not read value from {file!r}: {exc}")
-    if value is None:
-        _fail("Provide a VALUE argument or --file")
+    value = _value_or_file(value, file, "VALUE")
     conn = _conn()
     try:
         proposal = store.kb_propose(
@@ -527,6 +613,19 @@ def kb_reject(proposal_id: int = typer.Argument(...)):
 
 def _kv(label: str, value: str, style: str) -> None:
     console.print(f"  [dim]{label:>10}[/] [{style}]{value}[/]")
+
+
+def _print_comments(comments: list[dict]) -> None:
+    if not comments:
+        console.print("[dim]No comments.[/]")
+        return
+    for c in comments:
+        when = c["created_at"].replace("T", " ")
+        console.print(
+            f"[bold]#{c['id']}[/] [cyan]{c['author']}[/] [dim]{when}[/]"
+        )
+        console.print(c["body"])
+        console.print()
 
 
 def _issue_label(issue: dict) -> str:

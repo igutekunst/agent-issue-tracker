@@ -54,6 +54,11 @@ class DepBody(BaseModel):
     blocked_id: int
 
 
+class CommentBody(BaseModel):
+    body: str
+    author: str = "agent"
+
+
 class ProposeBody(BaseModel):
     key: str
     value: str | None = None
@@ -110,6 +115,7 @@ def api_get_issue(issue_id: int):
         issue["children"] = [
             c["id"] for c in store.list_issues(conn, parent_id=issue_id)
         ]
+        issue["comments"] = store.list_comments(conn, issue_id)
         return issue
     finally:
         conn.close()
@@ -163,6 +169,41 @@ def api_remove_dep(blocker_id: int, blocked_id: int):
     try:
         store.remove_dependency(conn, blocker_id, blocked_id)
         return {"ok": True}
+    finally:
+        conn.close()
+
+
+# --- Comments ---------------------------------------------------------------
+
+
+@app.get("/api/issues/{issue_id}/comments")
+def api_list_comments(issue_id: int):
+    conn = _conn()
+    try:
+        return store.list_comments(conn, issue_id)
+    finally:
+        conn.close()
+
+
+@app.post("/api/issues/{issue_id}/comments", status_code=201)
+def api_add_comment(issue_id: int, body: CommentBody):
+    conn = _conn()
+    try:
+        return _guard(
+            lambda: store.add_comment(
+                conn, issue_id, body=body.body, author=body.author
+            )
+        )
+    finally:
+        conn.close()
+
+
+@app.delete("/api/comments/{comment_id}", status_code=204)
+def api_delete_comment(comment_id: int):
+    conn = _conn()
+    try:
+        _guard(lambda: store.delete_comment(conn, comment_id))
+        return Response(status_code=204)
     finally:
         conn.close()
 

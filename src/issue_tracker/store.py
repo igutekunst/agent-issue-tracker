@@ -298,12 +298,67 @@ def graph(conn: sqlite3.Connection) -> dict:
             incomplete_blockers[edge["blocked_id"]] = (
                 incomplete_blockers.get(edge["blocked_id"], 0) + 1
             )
+    comment_counts = {
+        row["issue_id"]: row["n"]
+        for row in conn.execute(
+            "SELECT issue_id, COUNT(*) AS n FROM comments GROUP BY issue_id"
+        ).fetchall()
+    }
     for issue in issues:
         issue["blocked_count"] = incomplete_blockers.get(issue["id"], 0)
         issue["actionable"] = (
             issue["status"] in OPEN_STATUSES and issue["blocked_count"] == 0
         )
+        issue["comment_count"] = comment_counts.get(issue["id"], 0)
     return {"issues": issues, "dependencies": deps}
+
+
+# --- Comments ---------------------------------------------------------------
+
+
+def add_comment(
+    conn: sqlite3.Connection,
+    issue_id: int,
+    body: str,
+    author: str = "agent",
+) -> dict:
+    body = (body or "").strip()
+    if not body:
+        raise StoreError("Comment body must not be empty")
+    if get_issue(conn, issue_id) is None:
+        raise StoreError(f"Issue #{issue_id} does not exist")
+    cur = conn.execute(
+        "INSERT INTO comments (issue_id, author, body, created_at) "
+        "VALUES (?, ?, ?, ?)",
+        (issue_id, author or "agent", body, _now()),
+    )
+    comment_id = cur.lastrowid
+    _log(conn, "comment", "created", issue_id)
+    conn.commit()
+    return get_comment(conn, comment_id)
+
+
+def get_comment(conn: sqlite3.Connection, comment_id: int) -> dict | None:
+    row = conn.execute(
+        "SELECT * FROM comments WHERE id = ?", (comment_id,)
+    ).fetchone()
+    return dict(row) if row else None
+
+
+def list_comments(conn: sqlite3.Connection, issue_id: int) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM comments WHERE issue_id = ? ORDER BY id", (issue_id,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def delete_comment(conn: sqlite3.Connection, comment_id: int) -> None:
+    comment = get_comment(conn, comment_id)
+    if comment is None:
+        raise StoreError(f"Comment #{comment_id} does not exist")
+    conn.execute("DELETE FROM comments WHERE id = ?", (comment_id,))
+    _log(conn, "comment", "deleted", comment["issue_id"])
+    conn.commit()
 
 
 # --- Knowledge base ---------------------------------------------------------

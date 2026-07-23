@@ -74,6 +74,14 @@ CREATE TABLE IF NOT EXISTS dependencies (
     PRIMARY KEY (blocker_id, blocked_id)
 );
 
+CREATE TABLE IF NOT EXISTS comments (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    issue_id    INTEGER NOT NULL REFERENCES issues(id) ON DELETE CASCADE,
+    author      TEXT    NOT NULL DEFAULT 'agent',
+    body        TEXT    NOT NULL,
+    created_at  TEXT    NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS knowledge (
     key         TEXT PRIMARY KEY,
     value       TEXT NOT NULL,
@@ -107,6 +115,7 @@ CREATE TABLE IF NOT EXISTS change_log (
 CREATE INDEX IF NOT EXISTS idx_issues_parent ON issues(parent_id);
 CREATE INDEX IF NOT EXISTS idx_issues_status ON issues(status);
 CREATE INDEX IF NOT EXISTS idx_proposals_status ON knowledge_proposals(status);
+CREATE INDEX IF NOT EXISTS idx_comments_issue ON comments(issue_id);
 """
 
 

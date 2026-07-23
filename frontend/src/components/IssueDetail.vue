@@ -1,5 +1,5 @@
 <script setup>
-import { computed, ref } from 'vue'
+import { computed, ref, watch, onMounted } from 'vue'
 import { renderMarkdown } from '../markdown.js'
 import { store } from '../api.js'
 
@@ -12,6 +12,51 @@ const renderedDescription = computed(() => renderMarkdown(issue.value?.descripti
 const editing = ref(false)
 const draft = ref({})
 const newBlockerId = ref(null)
+
+// --- Comments -------------------------------------------------------------
+const comments = ref([])
+const newComment = ref('')
+const commentAuthor = ref('human')
+
+async function loadComments() {
+  if (props.issueId == null) {
+    comments.value = []
+    return
+  }
+  try {
+    comments.value = await store.getComments(props.issueId)
+  } catch (e) {
+    store.error = e.message
+  }
+}
+
+async function postComment() {
+  const body = newComment.value.trim()
+  if (!body) return
+  try {
+    await store.addComment(props.issueId, {
+      body,
+      author: commentAuthor.value.trim() || 'human',
+    })
+    newComment.value = ''
+    await loadComments()
+  } catch (e) {
+    store.error = e.message
+  }
+}
+
+async function removeComment(id) {
+  try {
+    await store.deleteComment(id)
+    await loadComments()
+  } catch (e) {
+    store.error = e.message
+  }
+}
+
+onMounted(loadComments)
+// Refetch when switching issues or when any change event arrives (live updates).
+watch(() => [props.issueId, store.changeVersion], loadComments)
 
 const blockers = computed(() =>
   store.dependencies
@@ -163,6 +208,45 @@ function title(id) {
         </ul>
       </div>
 
+      <div class="section comments">
+        <h3>
+          Notes / comments
+          <span v-if="comments.length" class="muted">({{ comments.length }})</span>
+        </h3>
+        <div v-for="c in comments" :key="c.id" class="comment">
+          <div class="chead">
+            <span class="cauthor">{{ c.author }}</span>
+            <span class="muted small">{{ c.created_at.replace('T', ' ') }}</span>
+            <span class="cspacer"></span>
+            <button
+              class="ghost tiny danger"
+              title="delete comment"
+              @click="removeComment(c.id)"
+            >
+              ✕
+            </button>
+          </div>
+          <div class="cbody markdown-body" v-html="renderMarkdown(c.body)"></div>
+        </div>
+        <p v-if="!comments.length" class="muted">No comments yet.</p>
+
+        <div class="add-comment">
+          <textarea
+            v-model="newComment"
+            placeholder="Add a note… (markdown supported · ⌘/Ctrl+Enter to post)"
+            rows="3"
+            @keydown.meta.enter="postComment"
+            @keydown.ctrl.enter="postComment"
+          ></textarea>
+          <div class="add-comment-row">
+            <input v-model="commentAuthor" class="author-input" placeholder="author" />
+            <button class="primary" :disabled="!newComment.trim()" @click="postComment">
+              Comment
+            </button>
+          </div>
+        </div>
+      </div>
+
       <div class="actions">
         <button class="primary" @click="startEdit">Edit</button>
         <button class="ghost danger" @click="del">Delete</button>
@@ -278,6 +362,49 @@ a:hover { text-decoration: underline; }
 .tiny {
   padding: 1px 7px;
   font-size: 11px;
+}
+
+/* Comments */
+.comment {
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--bg-elev2);
+  padding: 8px 10px;
+  margin-bottom: 8px;
+}
+.chead {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 4px;
+}
+.cauthor {
+  font-weight: 600;
+  color: var(--accent);
+  font-size: 13px;
+}
+.cspacer { flex: 1; }
+.chead .tiny { opacity: 0; transition: opacity 0.12s; }
+.comment:hover .chead .tiny { opacity: 1; }
+.cbody { font-size: 13px; }
+.add-comment {
+  margin-top: 10px;
+}
+.add-comment textarea {
+  margin-bottom: 6px;
+}
+.add-comment-row {
+  display: flex;
+  gap: 6px;
+}
+.author-input {
+  width: 110px;
+  flex-shrink: 0;
+  font-size: 12px;
+}
+.add-comment-row button {
+  width: auto;
+  flex: 1;
 }
 .actions {
   display: flex;

@@ -80,6 +80,9 @@ async function setStatus(issue, status) {
           <td>
             <span :class="{ done: i.status === 'done' }">{{ i.title }}</span>
             <span v-if="i.parent_id" class="muted"> ↳ #{{ i.parent_id }}</span>
+            <span v-if="i.comment_count" class="muted cc" title="comments">
+              💬 {{ i.comment_count }}
+            </span>
           </td>
           <td>
             <select
@@ -171,6 +174,10 @@ tbody tr:hover {
 .done {
   text-decoration: line-through;
   color: var(--text-dim);
+}
+.cc {
+  font-size: 12px;
+  margin-left: 6px;
 }
 .status-sel {
   width: auto;
