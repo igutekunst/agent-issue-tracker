@@ -1,0 +1,28 @@
+[project]
+name = "agent-issue-tracker"
+version = "0.1.0"
+description = "A hierarchical issue tracker and human-gated knowledge base for coding agents"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "fastapi>=0.110",
+    "uvicorn[standard]>=0.29",
+    "typer>=0.12",
+    "rich>=13.0",
+]
+
+[project.scripts]
+issue = "issue_tracker.cli:app"
+
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.setuptools.package-data]
+issue_tracker = ["static/**/*"]

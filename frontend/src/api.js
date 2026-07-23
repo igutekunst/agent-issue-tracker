@@ -1,0 +1,101 @@
+// Reactive client-side store: fetches data, holds it, and subscribes to the
+// server's SSE change feed so every view refreshes live.
+import { reactive } from 'vue'
+
+async function req(method, url, body) {
+  const opts = { method, headers: {} }
+  if (body !== undefined) {
+    opts.headers['Content-Type'] = 'application/json'
+    opts.body = JSON.stringify(body)
+  }
+  const res = await fetch(url, opts)
+  if (!res.ok) {
+    let detail = res.statusText
+    try {
+      const j = await res.json()
+      detail = j.detail || detail
+    } catch (_) {}
+    throw new Error(detail)
+  }
+  if (res.status === 204) return null
+  const text = await res.text()
+  return text ? JSON.parse(text) : null
+}
+
+export const store = reactive({
+  issues: [],
+  dependencies: [],
+  knowledge: [],
+  proposals: [],
+  meta: { statuses: [], priorities: [] },
+  connected: false,
+  error: '',
+
+  get pendingCount() {
+    return this.proposals.length
+  },
+
+  issueById(id) {
+    return this.issues.find((i) => i.id === id)
+  },
+
+  async loadAll() {
+    try {
+      const [graph, knowledge, proposals, meta] = await Promise.all([
+        req('GET', '/api/graph'),
+        req('GET', '/api/knowledge'),
+        req('GET', '/api/knowledge/proposals?status=pending'),
+        req('GET', '/api/meta'),
+      ])
+      this.issues = graph.issues
+      this.dependencies = graph.dependencies
+      this.knowledge = knowledge
+      this.proposals = proposals
+      this.meta = meta
+      this.error = ''
+    } catch (e) {
+      this.error = e.message
+    }
+  },
+
+  connect() {
+    const es = new EventSource('/events')
+    es.addEventListener('hello', () => {
+      this.connected = true
+      this.loadAll()
+    })
+    es.addEventListener('change', () => this.loadAll())
+    es.onerror = () => {
+      this.connected = false
+    }
+  },
+
+  // --- mutations ---
+  createIssue(payload) {
+    return req('POST', '/api/issues', payload)
+  },
+  updateIssue(id, payload) {
+    return req('PATCH', `/api/issues/${id}`, payload)
+  },
+  deleteIssue(id) {
+    return req('DELETE', `/api/issues/${id}`)
+  },
+  addDependency(blocker_id, blocked_id) {
+    return req('POST', '/api/dependencies', { blocker_id, blocked_id })
+  },
+  removeDependency(blocker_id, blocked_id) {
+    return req(
+      'DELETE',
+      `/api/dependencies?blocker_id=${blocker_id}&blocked_id=${blocked_id}`,
+    )
+  },
+  propose(payload) {
+    return req('POST', '/api/knowledge/proposals', payload)
+  },
+  approve(id) {
+    return req('POST', `/api/knowledge/proposals/${id}/approve`)
+  },
+  reject(id) {
+    return req('POST', `/api/knowledge/proposals/${id}/reject`)
+  },
+})

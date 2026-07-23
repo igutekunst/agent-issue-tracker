@@ -1,0 +1,102 @@
+---
+name: issue-tracker
+description: >-
+  Track work in this repo's local issue tracker and read/propose entries in its
+  human-approved knowledge base. Use whenever you need to record tasks, break
+  work into a dependency graph, find the next actionable issue, check project
+  facts/conventions, or propose a change to a shared fact. Invoke for phrases
+  like "add an issue", "what should I work on next", "mark this done", "what's
+  the deploy URL", or "remember that ...".
+---
+
+# Issue Tracker
+
+A local-first, hierarchical issue tracker plus a human-gated knowledge base,
+driven entirely from the `issue` CLI. Data lives in `.issues/tracker.db`
+(git-ignored) at the repo root. A human watches progress and approves knowledge
+changes through the web UI (`issue serve`).
+
+## Setup (once)
+
+If `issue` is not on PATH, install it:
+
+```bash
+pip install -e .        # from the repo root (or: uv pip install -e .)
+```
+
+Verify: `issue list`.
+
+## Core workflow for agents
+
+1. **Before starting work**, find what's actionable (open + unblocked, most
+   important first):
+   ```bash
+   issue next
+   ```
+2. **Claim it**: mark in-progress and record your branch/worktree so the human
+   can see who's doing what.
+   ```bash
+   issue start 12
+   issue update 12 --assignee agent --branch claude/feature-x
+   ```
+3. **Break big work down** into sub-issues and dependencies as you learn more.
+4. **When done**: `issue done 12`.
+
+Always prefer `--json` when you need to parse output programmatically.
+
+## Issue commands
+
+```bash
+issue add "Title" -d "Description" -p P1            # create (priority P0..P3)
+issue add "Subtask" --parent 3 --depends-on 2       # child of #3, blocked by #2
+issue list [--status open] [--priority P0] [--json] # list, most important first
+issue next [--json]                                 # actionable: open & unblocked
+issue tree                                          # hierarchy view
+issue show 3 [--json]                               # detail incl. blockers/children
+issue update 3 --status in_progress --assignee agent --branch b --meta '{"pr":42}'
+issue start 3 | issue done 3 | issue block 3        # status shortcuts
+issue rm 3 -y                                        # delete
+```
+
+Dependencies (`BLOCKER` must finish before `BLOCKED`):
+
+```bash
+issue dep add 2 5     # #2 blocks #5  (i.e. #5 depends on #2)
+issue dep rm 2 5
+```
+
+Statuses: `open`, `in_progress`, `blocked`, `done`, `cancelled`.
+Priorities: `P0` (highest) .. `P3`.
+
+**Fields worth setting for coordination:** `--assignee`, `--branch`,
+`--worktree`, and freeform `--meta '<json>'` (e.g. PR number, links). These let
+the human — and other agents — see who owns what and where the work lives.
+
+## Knowledge base (human-approved facts)
+
+A key/value store of durable project facts (conventions, URLs, decisions).
+Agents **read freely** but **cannot change** it directly — every write is queued
+until a human approves it in the web UI.
+
+```bash
+issue kb list [--json]                 # all approved facts
+issue kb get deploy.url                 # read one value
+issue kb propose deploy.url "https://..." -n "why this change"   # queue a change
+issue kb propose-delete stale.key -n "no longer true"
+issue kb pending [--json]               # see what's awaiting approval
+```
+
+**Do not assume a proposed value is live.** After `kb propose`, the value only
+takes effect once a human approves it. If you need a fact that isn't approved
+yet, tell the human it's pending rather than acting on the proposed value.
+
+Use the KB for things that should outlive a single task and that a human should
+sign off on: "the prod database is X", "we deploy via Y", "the API base path is
+Z". Use issues (not the KB) for work items.
+
+## Web interface
+
+`issue serve` starts the dependency-graph view, issue board, and the approval
+queue at http://127.0.0.1:8000. The human uses this to watch the graph update
+live (SSE) and to approve/reject knowledge proposals. You generally don't need
+to run it, but you can point the human at it.
