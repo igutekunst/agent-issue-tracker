@@ -265,6 +265,15 @@ def api_reject(proposal_id: int):
         conn.close()
 
 
+@app.post("/api/knowledge/proposals/{proposal_id}/withdraw")
+def api_withdraw(proposal_id: int):
+    conn = _conn()
+    try:
+        return _guard(lambda: store.withdraw_proposal(conn, proposal_id))
+    finally:
+        conn.close()
+
+
 # --- SSE live feed ----------------------------------------------------------
 
 

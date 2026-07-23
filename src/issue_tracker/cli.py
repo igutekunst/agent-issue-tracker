@@ -525,6 +525,7 @@ def kb_propose(
             f"Proposed [bold]#{proposal['id']}[/]: set [cyan]{key}[/] "
             f"([yellow]pending human approval[/])"
         )
+        _note_superseded(proposal)
 
 
 @kb_app.command("propose-delete")
@@ -547,6 +548,7 @@ def kb_propose_delete(
         f"Proposed [bold]#{proposal['id']}[/]: delete [cyan]{key}[/] "
         f"([yellow]pending human approval[/])"
     )
+    _note_superseded(proposal)
 
 
 @kb_app.command("pending")
@@ -582,6 +584,19 @@ def kb_pending(json_out: bool = typer.Option(False, "--json")):
     console.print(table)
 
 
+@kb_app.command("withdraw")
+def kb_withdraw(proposal_id: int = typer.Argument(...)):
+    """Retract your own pending proposal (an agent's undo; no human needed)."""
+    conn = _conn()
+    try:
+        store.withdraw_proposal(conn, proposal_id)
+    except store.StoreError as exc:
+        _fail(str(exc))
+    finally:
+        conn.close()
+    console.print(f"Withdrew proposal #{proposal_id}")
+
+
 @kb_app.command("approve")
 def kb_approve(proposal_id: int = typer.Argument(...)):
     """Approve a pending proposal (human action)."""
@@ -613,6 +628,13 @@ def kb_reject(proposal_id: int = typer.Argument(...)):
 
 def _kv(label: str, value: str, style: str) -> None:
     console.print(f"  [dim]{label:>10}[/] [{style}]{value}[/]")
+
+
+def _note_superseded(proposal: dict) -> None:
+    superseded = proposal.get("superseded") or []
+    if superseded:
+        ids = ", ".join(f"#{i}" for i in superseded)
+        console.print(f"  [dim]superseded earlier pending proposal(s): {ids}[/]")
 
 
 def _print_comments(comments: list[dict]) -> None:

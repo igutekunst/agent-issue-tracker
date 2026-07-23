@@ -84,7 +84,15 @@ issue kb get deploy.url                 # read one value
 issue kb propose deploy.url "https://..." -n "why this change"   # queue a change
 issue kb propose-delete stale.key -n "no longer true"
 issue kb pending [--json]               # see what's awaiting approval
+issue kb withdraw 7                      # retract your own pending proposal #7
 ```
+
+**One pending proposal per key.** Proposing again for a key that already has a
+pending proposal *supersedes* the earlier one (it won't stack duplicates in the
+human's queue) — so just re-propose to fix a mistake. You can also
+`issue kb withdraw <id>` to retract a pending proposal yourself without needing
+a human to reject it. (`withdraw` is your own undo; `approve`/`reject` are the
+human's decision.)
 
 **Values may be long and use markdown** (headings, lists, tables, code fences,
 links) — they render as formatted markdown in the web UI. For multi-line values,

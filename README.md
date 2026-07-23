@@ -99,6 +99,7 @@ issue kb propose KEY VALUE [-n NOTE]      # queue a change for human approval
 issue kb propose KEY --file NOTES.md      # value from a file ('-f -' for stdin)
 issue kb propose-delete KEY [-n NOTE]
 issue kb pending [--json]                 # what's awaiting approval
+issue kb withdraw ID                      # author retracts their own pending proposal
 issue kb approve ID | issue kb reject ID  # human action (also in the web UI)
 ```
 
@@ -112,6 +113,11 @@ issue kb approve ID | issue kb reject ID  # human action (also in the web UI)
 
 This keeps durable, shared facts under human control while still letting agents
 propose updates as they learn things.
+
+Each key has at most one live pending proposal: re-proposing a key that already
+has one **supersedes** the earlier proposal instead of stacking duplicates in the
+queue. An agent can also **withdraw** its own pending proposal
+(`issue kb withdraw <id>`) to fix a mistake without needing a human to reject it.
 
 ## Architecture
 

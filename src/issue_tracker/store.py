@@ -398,18 +398,36 @@ def kb_propose(
     if operation == "delete" and existing is None:
         raise StoreError(f"Cannot propose deletion of unknown key {key!r}")
 
+    now = _now()
+    # A key may have only one live pending proposal: supersede any earlier ones
+    # rather than stacking duplicates in the approval queue.
+    stale = conn.execute(
+        "SELECT id FROM knowledge_proposals WHERE key = ? AND status = 'pending'",
+        (key,),
+    ).fetchall()
+    superseded = [row["id"] for row in stale]
+    for old_id in superseded:
+        conn.execute(
+            "UPDATE knowledge_proposals SET status = 'superseded', resolved_at = ? "
+            "WHERE id = ?",
+            (now, old_id),
+        )
+        _log(conn, "proposal", "superseded", old_id)
+
     current_value = existing["value"] if existing else None
     cur = conn.execute(
         """INSERT INTO knowledge_proposals
            (key, operation, proposed_value, current_value, author, note,
             status, created_at)
            VALUES (?, ?, ?, ?, ?, ?, 'pending', ?)""",
-        (key, operation, value, current_value, author, note, _now()),
+        (key, operation, value, current_value, author, note, now),
     )
     proposal_id = cur.lastrowid
     _log(conn, "proposal", "created", proposal_id)
     conn.commit()
-    return get_proposal(conn, proposal_id)
+    result = get_proposal(conn, proposal_id)
+    result["superseded"] = superseded
+    return result
 
 
 def get_proposal(conn: sqlite3.Connection, proposal_id: int) -> dict | None:
@@ -461,6 +479,25 @@ def approve_proposal(conn: sqlite3.Connection, proposal_id: int) -> dict:
         (now, proposal_id),
     )
     _log(conn, "knowledge", "approved", proposal["key"])
+    _log(conn, "proposal", "resolved", proposal_id)
+    conn.commit()
+    return get_proposal(conn, proposal_id)
+
+
+def withdraw_proposal(conn: sqlite3.Connection, proposal_id: int) -> dict:
+    """Retract a pending proposal (the author's own undo; not a human decision)."""
+    proposal = get_proposal(conn, proposal_id)
+    if proposal is None:
+        raise StoreError(f"Proposal #{proposal_id} does not exist")
+    if proposal["status"] != "pending":
+        raise StoreError(
+            f"Proposal #{proposal_id} is already {proposal['status']}"
+        )
+    conn.execute(
+        "UPDATE knowledge_proposals SET status = 'withdrawn', resolved_at = ? "
+        "WHERE id = ?",
+        (_now(), proposal_id),
+    )
     _log(conn, "proposal", "resolved", proposal_id)
     conn.commit()
     return get_proposal(conn, proposal_id)
