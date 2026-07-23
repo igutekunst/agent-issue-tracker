@@ -11,7 +11,7 @@ from fastapi.responses import JSONResponse, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from . import db, store
+from . import FEATURES, __version__, db, store
 
 STATIC_DIR = Path(__file__).parent / "static"
 
@@ -79,7 +79,39 @@ def _guard(fn):
 
 @app.get("/api/meta")
 def meta():
-    return {"statuses": store.STATUSES, "priorities": store.PRIORITIES}
+    return {
+        "statuses": store.STATUSES,
+        "priorities": store.PRIORITIES,
+        "version": __version__,
+        "features": FEATURES,
+    }
+
+
+@app.get("/api/version")
+def version():
+    return {"version": __version__, "features": FEATURES}
+
+
+@app.get("/api/changes")
+def api_changes(since: str | None = None):
+    """Update sentinel: has anything changed since a token/timestamp?
+
+    Returns the current ``token`` (the latest change id). Pass it back later as
+    ``?since=<token>`` (or an ISO timestamp) to get the changes since then.
+    """
+    conn = _conn()
+    try:
+        token = store.latest_change_id(conn)
+        rows = store.changes_since_any(conn, since) if since is not None else []
+        return {
+            "token": token,
+            "since": since,
+            "changed": bool(rows),
+            "count": len(rows),
+            "changes": rows,
+        }
+    finally:
+        conn.close()
 
 
 # --- Issues -----------------------------------------------------------------

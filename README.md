@@ -89,6 +89,8 @@ issue update ID [--title ...] [--status ...] [--priority ...] [--parent ...]
                [--branch ...] [--worktree ...] [--assignee ...] [--meta JSON]
 issue start ID | issue done ID | issue block ID
 issue rm ID [-y]
+issue version [--json]              # version, feature flags, active db path
+issue changes [--since TOKEN|TS] [--json]   # update sentinel (see below)
 issue dep add BLOCKER BLOCKED       # BLOCKER must finish before BLOCKED
 issue dep rm  BLOCKER BLOCKED
 issue serve [--host H] [--port N] [--reload]
@@ -136,6 +138,22 @@ skills/issue-tracker/SKILL.md   Instructions so agents use the CLI consistently
 the web API — appends to a `change_log` table. The `/events` SSE endpoint tails
 that table, so a `issue done 3` you run in a terminal instantly updates an open
 browser graph.
+
+### Update sentinel (polling)
+
+For agents that would rather poll than hold an SSE connection, `issue changes`
+(and `GET /api/changes`) answer "has anything changed since X?".
+
+```bash
+TOKEN=$(issue changes --json | jq -r .token)   # grab the current token
+# ... do work, or wait ...
+issue changes --since "$TOKEN" --json           # -> {changed, count, changes[], token}
+```
+
+The token is a monotonic change id; each response returns an updated `token` to
+use next time. An ISO-8601 timestamp is also accepted as `--since`. `issue
+version --json` exposes a `features` list so an agent can confirm a build has a
+capability (e.g. `"kb-supersede"`) before relying on it.
 
 ### Configuration
 

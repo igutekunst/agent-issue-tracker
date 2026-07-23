@@ -16,7 +16,7 @@ from rich.console import Console
 from rich.table import Table
 from rich.tree import Tree
 
-from . import db, store
+from . import FEATURES, __version__, db, store
 
 app = typer.Typer(
     help="Hierarchical issue tracker + human-gated knowledge base for agents.",
@@ -32,6 +32,26 @@ app.add_typer(comment_app, name="comment")
 
 console = Console()
 err = Console(stderr=True)
+
+
+def _version_callback(value: bool):
+    if value:
+        console.print(f"agent-issue-tracker {__version__}")
+        raise typer.Exit()
+
+
+@app.callback()
+def _main(
+    version: Optional[bool] = typer.Option(
+        None,
+        "--version",
+        "-V",
+        callback=_version_callback,
+        is_eager=True,
+        help="Show version and exit.",
+    ),
+):
+    """Hierarchical issue tracker + human-gated knowledge base for agents."""
 
 STATUS_STYLE = {
     "open": "white",
@@ -347,6 +367,77 @@ def serve(
     console.print(f"Database: [cyan]{path}[/]")
     console.print(f"Web UI:   [green]http://{host}:{port}[/]")
     uvicorn.run("issue_tracker.app:app", host=host, port=port, reload=reload)
+
+
+@app.command()
+def version(json_out: bool = typer.Option(False, "--json")):
+    """Show version, feature flags, and the active database path.
+
+    Agents can check `issue version --json` to confirm a build has a given
+    capability (e.g. the "features" list contains "kb-supersede").
+    """
+    info = {
+        "version": __version__,
+        "features": FEATURES,
+        "db": str(db.db_path()),
+    }
+    if json_out:
+        _emit(info, True)
+        return
+    console.print(f"agent-issue-tracker [bold]{__version__}[/]")
+    console.print(f"  [dim]db:[/] [cyan]{db.db_path()}[/]")
+    console.print(f"  [dim]features:[/] {', '.join(FEATURES)}")
+
+
+@app.command()
+def changes(
+    since: Optional[str] = typer.Option(
+        None, "--since", "-s", help="Token (change id) or ISO timestamp to compare against"
+    ),
+    json_out: bool = typer.Option(False, "--json"),
+):
+    """Update sentinel: has anything changed since a token/timestamp?
+
+    Call with no --since to get the current token. Pass that token back later
+    via --since to list what changed and receive an updated token. Tokens are
+    monotonic change ids; an ISO-8601 timestamp is also accepted.
+    """
+    conn = _conn()
+    try:
+        token = store.latest_change_id(conn)
+        rows = store.changes_since_any(conn, since) if since is not None else []
+    finally:
+        conn.close()
+    if json_out:
+        _emit(
+            {
+                "token": token,
+                "since": since,
+                "changed": bool(rows),
+                "count": len(rows),
+                "changes": rows,
+            },
+            True,
+        )
+        return
+    if since is None:
+        console.print(f"token: [bold]{token}[/]")
+        return
+    if not rows:
+        console.print(f"No changes since {since}. token: [bold]{token}[/]")
+        return
+    console.print(
+        f"[bold]{len(rows)}[/] change(s) since {since}; new token: [bold]{token}[/]"
+    )
+    table = Table(show_header=True, header_style="bold")
+    table.add_column("id", justify="right")
+    table.add_column("kind")
+    table.add_column("action")
+    table.add_column("ref")
+    table.add_column("ts", style="dim")
+    for r in rows:
+        table.add_row(str(r["id"]), r["kind"], r["action"], str(r["ref"]), r["ts"])
+    console.print(table)
 
 
 # --- Dependency commands ----------------------------------------------------

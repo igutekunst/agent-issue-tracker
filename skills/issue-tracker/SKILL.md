@@ -68,6 +68,19 @@ issue dep rm 2 5
 Statuses: `open`, `in_progress`, `blocked`, `done`, `cancelled`.
 Priorities: `P0` (highest) .. `P3`.
 
+## Checking the build and polling for changes
+
+```bash
+issue version --json      # {version, features[], db} — confirm a capability is present
+issue changes --json      # {token, ...} — grab the current update token
+issue changes --since 42  # what changed since token 42 (or an ISO timestamp) + new token
+```
+
+Use `issue changes` as an update sentinel when you'd rather poll than watch the
+web UI: keep the returned `token` and pass it back as `--since` later to see
+whether (and what) changed. Use `issue version` to verify the build has a
+feature (e.g. the `features` list contains `kb-withdraw`) before depending on it.
+
 **Fields worth setting for coordination:** `--assignee`, `--branch`,
 `--worktree`, and freeform `--meta '<json>'` (e.g. PR number, links). These let
 the human — and other agents — see who owns what and where the work lives.

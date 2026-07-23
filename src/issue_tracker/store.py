@@ -534,3 +534,19 @@ def changes_since(conn: sqlite3.Connection, last_id: int) -> list[dict]:
 def latest_change_id(conn: sqlite3.Connection) -> int:
     row = conn.execute("SELECT COALESCE(MAX(id), 0) AS m FROM change_log").fetchone()
     return int(row["m"])
+
+
+def changes_since_ts(conn: sqlite3.Connection, ts: str) -> list[dict]:
+    rows = conn.execute(
+        "SELECT * FROM change_log WHERE ts > ? ORDER BY id", (ts,)
+    ).fetchall()
+    return [dict(r) for r in rows]
+
+
+def changes_since_any(conn: sqlite3.Connection, since: str | int) -> list[dict]:
+    """Return changes since a sentinel that is either a numeric token (change id)
+    or an ISO-8601 timestamp string."""
+    token = str(since).strip()
+    if token.isdigit():
+        return changes_since(conn, int(token))
+    return changes_since_ts(conn, token)
