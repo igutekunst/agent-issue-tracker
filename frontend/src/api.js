@@ -118,6 +118,10 @@ export const store = reactive({
     this.toasts = this.toasts.filter((x) => x.key !== key)
   },
 
+  clearToasts() {
+    this.toasts = []
+  },
+
   markActivityRead() {
     this.unread = 0
   },
